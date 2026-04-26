@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/obsidian_dark"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:gravity="center_horizontal">
+
+        <ImageView
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:src="@drawable/ic_shield"
+            android:layout_marginTop="32dp"
+            android:contentDescription="Scam Shield Logo" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Complete Your Profile"
+            android:textColor="@color/cyber_cyan"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Please select your country to help us provide better community scam protection."
+            android:textColor="@color/text_muted"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:layout_marginBottom="32dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Select Country"
+            android:textColor="@color/text_muted"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Simple Spinner for Country Selection -->
+        <Spinner
+            android:id="@+id/spinner_country"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:background="@drawable/card_bg"
+            android:popupBackground="@drawable/card_bg"
+            android:spinnerMode="dropdown"
+            android:padding="12dp"
+            android:layout_marginBottom="32dp" />
+
+        <Button
+            android:id="@+id/btn_save_profile"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="SAVE AND CONTINUE"
+            android:textColor="@color/obsidian_dark"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:backgroundTint="@color/cyber_cyan" />
+
+        <ProgressBar
+            android:id="@+id/progress_profile"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:visibility="gone"
+            android:indeterminateTint="@color/cyber_cyan" />
+
+    </LinearLayout>
+</ScrollView>

@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/obsidian_900"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center_horizontal"
+        android:padding="32dp">
+
+        <!-- Logo -->
+        <ImageView
+            android:layout_width="96dp"
+            android:layout_height="96dp"
+            android:layout_marginTop="48dp"
+            android:src="@drawable/ic_shield"
+            android:contentDescription="Scam Shield Logo"
+            android:tint="@color/cyber_cyan" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="SCAM SHIELD AI"
+            android:textColor="@color/cyber_cyan"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.15" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="AI-Powered Call Protection"
+            android:textColor="@color/text_muted"
+            android:textSize="14sp" />
+
+        <!-- Google Sign-In Button -->
+        <Button
+            android:id="@+id/btn_google_signin"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="48dp"
+            android:text="SIGN IN WITH GOOGLE"
+            android:textColor="#000000"
+            android:textStyle="bold"
+            android:backgroundTint="@color/cyber_cyan"
+            android:fontFamily="monospace" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="— OR —"
+            android:textColor="@color/text_dim"
+            android:textSize="14sp"
+            android:fontFamily="monospace" />
+
+        <!-- Phone input -->
+        <LinearLayout
+            android:id="@+id/layout_phone_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PHONE NUMBER"
+                android:textColor="@color/text_dim"
+                android:textSize="12sp"
+                android:letterSpacing="0.1"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:background="@drawable/terminal_bg"
+                android:padding="4dp">
+
+                <EditText
+                    android:id="@+id/et_phone"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:hint="+1 234 567 8900"
+                    android:textColorHint="#555"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:fontFamily="monospace"
+                    android:inputType="phone"
+                    android:background="@android:color/transparent"
+                    android:paddingStart="12dp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_send_otp"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="16dp"
+                android:text="SEND OTP"
+                android:textColor="#000000"
+                android:textStyle="bold"
+                android:backgroundTint="@color/cyber_cyan"
+                android:fontFamily="monospace" />
+        </LinearLayout>
+
+        <!-- OTP verification (hidden initially) -->
+        <LinearLayout
+            android:id="@+id/layout_otp_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="32dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="VERIFICATION CODE"
+                android:textColor="@color/text_dim"
+                android:textSize="12sp"
+                android:letterSpacing="0.1"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/tv_otp_sent_to"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OTP sent to phone"
+                android:textColor="@color/cyber_green"
+                android:textSize="13sp"
+                android:layout_marginBottom="12dp" />
+
+            <EditText
+                android:id="@+id/et_otp"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:hint="Enter 6-digit OTP"
+                android:textColorHint="#555"
+                android:textColor="@color/text_primary"
+                android:textSize="20sp"
+                android:fontFamily="monospace"
+                android:textAlignment="center"
+                android:letterSpacing="0.3"
+                android:inputType="number"
+                android:maxLength="6"
+                android:background="@drawable/terminal_bg"
+                android:padding="12dp" />
+
+            <Button
+                android:id="@+id/btn_verify_otp"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="16dp"
+                android:text="VERIFY AND ENTER"
+                android:textColor="#000000"
+                android:textStyle="bold"
+                android:backgroundTint="@color/cyber_green"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:id="@+id/tv_resend_otp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="16dp"
+                android:text="Resend OTP"
+                android:textColor="@color/cyber_cyan"
+                android:textSize="14sp"
+                android:padding="8dp" />
+        </LinearLayout>
+
+        <!-- Status -->
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textColor="@color/neon_amber"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <!-- Demo mode -->
+        <Button
+            android:id="@+id/btn_demo_mode"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="24dp"
+            android:text="BYPASS LOGIN (DEMO RUN)"
+            android:textColor="@color/cyber_cyan"
+            android:textStyle="bold"
+            android:backgroundTint="#222222"
+            android:fontFamily="monospace" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Your data is never shared"
+            android:textColor="#444"
+            android:textSize="12sp" />
+
+    </LinearLayout>
+</ScrollView>

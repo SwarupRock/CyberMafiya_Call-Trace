@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark cybersecurity theme -->
+    <style name="Theme.ScamShield" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/obsidian_900</item>
+        <item name="android:statusBarColor">@color/obsidian_800</item>
+        <item name="android:navigationBarColor">@color/obsidian_800</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="colorPrimary">@color/cyber_cyan</item>
+        <item name="colorPrimaryDark">@color/cyber_cyan_dim</item>
+        <item name="colorAccent">@color/cyber_cyan</item>
+    </style>
+</resources>
