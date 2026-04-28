@@ -42,8 +42,8 @@ public class ScamAnalyzerAI {
     private static final String PREF_NVIDIA_ASR_API_KEY = "nvidia_asr_api_key";
     private static final String NVIDIA_MODEL = "meta/llama-3.1-8b-instruct";
     private static final String NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
-    private static final String NVIDIA_RIVA_RECOGNIZE_URL =
-            "https://grpc.nvcf.nvidia.com/nvidia.riva.asr.RivaSpeechRecognition/Recognize";
+    private static final String NVIDIA_RIVA_STREAMING_URL =
+            "https://grpc.nvcf.nvidia.com/nvidia.riva.asr.RivaSpeechRecognition/StreamingRecognize";
     private static final String NVIDIA_PARAKEET_FUNCTION_ID = "1598d209-5e27-4d3c-8079-4751568b1081";
     private static final MediaType GRPC_MEDIA_TYPE = MediaType.get("application/grpc");
 
@@ -504,11 +504,10 @@ public class ScamAnalyzerAI {
 
     private String transcribeAudioWithNvidia(String apiKey, byte[] audioData, String mimeType) throws Exception {
         AudioPcmConverter.PcmAudio pcm = AudioPcmConverter.toMono16k(appContext, audioData, mimeType);
-        byte[] recognizeRequest = buildRecognizeRequest(pcm.pcm16le);
-        byte[] grpcBody = frameGrpcMessage(recognizeRequest);
+        byte[] grpcBody = buildStreamingGrpcBody(pcm.pcm16le);
 
         Request request = new Request.Builder()
-                .url(NVIDIA_RIVA_RECOGNIZE_URL)
+                .url(NVIDIA_RIVA_STREAMING_URL)
                 .header("Authorization", "Bearer " + apiKey)
                 .header("function-id", NVIDIA_PARAKEET_FUNCTION_ID)
                 .header("te", "trailers")
@@ -536,12 +535,38 @@ public class ScamAnalyzerAI {
         }
     }
 
-    private byte[] buildRecognizeRequest(byte[] pcm16le) {
-        byte[] config = buildRecognitionConfig();
+    private byte[] buildStreamingGrpcBody(byte[] pcm16le) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        writeBytesField(out, 1, config);
-        writeBytesField(out, 2, pcm16le);
+        byte[] configFrame = frameGrpcMessage(buildStreamingConfigRequest());
+        out.write(configFrame, 0, configFrame.length);
+
+        int chunkSize = 32 * 1024;
+        for (int offset = 0; offset < pcm16le.length; offset += chunkSize) {
+            int length = Math.min(chunkSize, pcm16le.length - offset);
+            byte[] chunk = new byte[length];
+            System.arraycopy(pcm16le, offset, chunk, 0, length);
+            byte[] audioRequest = buildStreamingAudioRequest(chunk);
+            byte[] frame = frameGrpcMessage(audioRequest);
+            out.write(frame, 0, frame.length);
+        }
         return out.toByteArray();
+    }
+
+    private byte[] buildStreamingConfigRequest() {
+        byte[] config = buildRecognitionConfig();
+        ByteArrayOutputStream streamingConfig = new ByteArrayOutputStream();
+        writeBytesField(streamingConfig, 1, config);
+        writeVarintField(streamingConfig, 2, 0);
+
+        ByteArrayOutputStream request = new ByteArrayOutputStream();
+        writeBytesField(request, 1, streamingConfig.toByteArray());
+        return request.toByteArray();
+    }
+
+    private byte[] buildStreamingAudioRequest(byte[] pcmChunk) {
+        ByteArrayOutputStream request = new ByteArrayOutputStream();
+        writeBytesField(request, 2, pcmChunk);
+        return request.toByteArray();
     }
 
     private byte[] buildRecognitionConfig() {
