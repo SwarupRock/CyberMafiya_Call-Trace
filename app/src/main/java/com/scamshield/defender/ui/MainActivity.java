@@ -1267,7 +1267,7 @@ public class MainActivity extends AppCompatActivity {
                             sb.append("Risk: ").append(result.getThreatLevel()).append("\n");
                             sb.append("Confidence: ").append(pct).append("%\n");
                             sb.append("Type: ").append(result.threatType).append("\n");
-                            sb.append("Reasoning: ").append(result.reasoning);
+                            sb.append("Reasoning: ").append(trimForDisplay(result.reasoning, 120));
                             sb.append("\n\n---------------------------\n");
                             sb.append("TRANSCRIPT\n\n").append(transcript);
                             tvTranscript.setText(sb.toString());
@@ -1298,6 +1298,13 @@ public class MainActivity extends AppCompatActivity {
         tvTranscript.setText("❌ ERROR:\n\n" + error);
         tvThreatLevel.setText("ERROR");
         tvThreatLevel.setTextColor(getColor(R.color.neon_crimson));
+    }
+
+    private String trimForDisplay(String text, int maxChars) {
+        if (text == null) return "";
+        String cleaned = text.trim();
+        if (cleaned.length() <= maxChars) return cleaned;
+        return cleaned.substring(0, Math.max(0, maxChars - 3)).trim() + "...";
     }
 
     private void saveAudioAnalysisToHistory(String transcript, ScamAnalyzerAI.AnalysisResult result) {

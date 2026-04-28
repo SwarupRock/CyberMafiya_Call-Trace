@@ -305,20 +305,25 @@
                 <ScrollView
                     android:id="@+id/scroll_transcript"
                     android:layout_width="match_parent"
-                    android:layout_height="260dp"
+                    android:layout_height="300dp"
                     android:layout_marginTop="10dp"
                     android:background="@drawable/terminal_bg"
-                    android:padding="12dp">
+                    android:fadeScrollbars="false"
+                    android:padding="12dp"
+                    android:scrollbarAlwaysDrawVerticalTrack="true"
+                    android:scrollbarStyle="insideInset"
+                    android:scrollbars="vertical">
 
                     <TextView
                         android:id="@+id/tv_transcript"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:fontFamily="monospace"
-                        android:lineSpacingExtra="5dp"
+                        android:lineSpacingExtra="4dp"
+                        android:paddingEnd="10dp"
                         android:text="Upload an audio file or make a call to start analysis..."
                         android:textColor="@color/cyber_cyan"
-                        android:textSize="13sp" />
+                        android:textSize="12sp" />
                 </ScrollView>
             </LinearLayout>
 
