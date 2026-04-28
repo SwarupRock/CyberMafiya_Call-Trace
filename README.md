@@ -19,7 +19,7 @@ Call Trace is an Android-first scam call defense app built to warn users during 
 - Call history screen with filters and CSV export
 - SMS scam/OTP quarantine logic
 - NVIDIA API support for live transcript analysis through NVIDIA chat completions
-- NVIDIA ASR key support for uploaded audio transcription before scam analysis
+- NVIDIA Riva/Parakeet ASR support for uploaded audio transcription before scam analysis
 - PWA dashboard prototype assets
 - Firebase Data Connect schema and generated Android connector files
 
@@ -28,7 +28,7 @@ Call Trace is an Android-first scam call defense app built to warn users during 
 Call Trace uses NVIDIA APIs only:
 
 - **NVIDIA LLM API key**: live transcript scam analysis using NVIDIA's OpenAI-compatible chat completions endpoint.
-- **NVIDIA ASR API key**: uploaded audio transcription with NVIDIA Parakeet ASR before the transcript is checked by the LLM.
+- **NVIDIA ASR API key**: uploaded audio transcription through NVIDIA Riva/Parakeet gRPC before the transcript is checked by the LLM.
 
 NVIDIA chat models do not transcribe uploaded audio files directly, so Call Trace keeps two separate NVIDIA keys: one for text intelligence and one for speech-to-text.
 
@@ -86,5 +86,5 @@ app/build/outputs/apk/debug/app-debug.apk
 
 - Live speech-to-text depends on Android speech recognition and microphone/call audio availability.
 - NVIDIA live analysis works on text transcripts.
-- Uploaded audio transcription depends on the NVIDIA ASR API being available for the key/account used on the device.
+- Uploaded audio transcription depends on the NVIDIA Riva/Parakeet function being available for the key/account used on the device.
 - Some Android call blocking APIs depend on device permissions, default dialer restrictions, and OEM behavior.

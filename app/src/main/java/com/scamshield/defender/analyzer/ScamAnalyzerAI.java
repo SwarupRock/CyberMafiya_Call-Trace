@@ -6,11 +6,11 @@ import android.util.Log;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.annotations.SerializedName;
 
+import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -23,6 +23,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 public class ScamAnalyzerAI {
 
@@ -35,8 +42,10 @@ public class ScamAnalyzerAI {
     private static final String PREF_NVIDIA_ASR_API_KEY = "nvidia_asr_api_key";
     private static final String NVIDIA_MODEL = "meta/llama-3.1-8b-instruct";
     private static final String NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
-    private static final String NVIDIA_ASR_MODEL = "nvidia/parakeet-ctc-1_1b-asr";
-    private static final String NVIDIA_ASR_ENDPOINT = "https://integrate.api.nvidia.com/v1/audio/transcriptions";
+    private static final String NVIDIA_RIVA_RECOGNIZE_URL =
+            "https://grpc.nvcf.nvidia.com/nvidia.riva.asr.RivaSpeechRecognition/Recognize";
+    private static final String NVIDIA_PARAKEET_FUNCTION_ID = "1598d209-5e27-4d3c-8079-4751568b1081";
+    private static final MediaType GRPC_MEDIA_TYPE = MediaType.get("application/grpc");
 
     private static final Map<String, String[]> SCAM_KEYWORDS = new HashMap<>();
 
@@ -99,6 +108,11 @@ public class ScamAnalyzerAI {
     private final Context appContext;
     private final ExecutorService cloudExecutor = Executors.newSingleThreadExecutor();
     private final Gson gson = new Gson();
+    private final OkHttpClient rivaClient = new OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(90, TimeUnit.SECONDS)
+            .build();
     private final List<String> detectedKeywords = new ArrayList<>();
 
     private float currentScore = 0f;
@@ -489,90 +503,227 @@ public class ScamAnalyzerAI {
     }
 
     private String transcribeAudioWithNvidia(String apiKey, byte[] audioData, String mimeType) throws Exception {
-        URL url = new URL(NVIDIA_ASR_ENDPOINT);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        String boundary = "CallTraceBoundary" + System.currentTimeMillis();
-        conn.setRequestMethod("POST");
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(60000);
-        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-        conn.setDoOutput(true);
+        AudioPcmConverter.PcmAudio pcm = AudioPcmConverter.toMono16k(appContext, audioData, mimeType);
+        byte[] recognizeRequest = buildRecognizeRequest(pcm.pcm16le);
+        byte[] grpcBody = frameGrpcMessage(recognizeRequest);
 
-        try (OutputStream os = conn.getOutputStream()) {
-            writeMultipartField(os, boundary, "model", NVIDIA_ASR_MODEL);
-            writeMultipartField(os, boundary, "response_format", "json");
-            writeMultipartFile(os, boundary, "file", "call-trace-audio", mimeType, audioData);
-            os.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
-        }
+        Request request = new Request.Builder()
+                .url(NVIDIA_RIVA_RECOGNIZE_URL)
+                .header("Authorization", "Bearer " + apiKey)
+                .header("function-id", NVIDIA_PARAKEET_FUNCTION_ID)
+                .header("te", "trailers")
+                .header("grpc-encoding", "identity")
+                .header("grpc-accept-encoding", "identity")
+                .post(RequestBody.create(grpcBody, GRPC_MEDIA_TYPE))
+                .build();
 
-        int code = conn.getResponseCode();
-        String response = readHttpResponse(conn, code);
-        conn.disconnect();
-
-        if (code < 200 || code >= 300) {
-            throw new IllegalStateException("NVIDIA ASR HTTP " + code + ": " + response);
-        }
-
-        return extractTranscriptText(response);
-    }
-
-    private void writeMultipartField(OutputStream os, String boundary, String name, String value) throws Exception {
-        os.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
-        os.write(("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-        os.write(value.getBytes(StandardCharsets.UTF_8));
-        os.write("\r\n".getBytes(StandardCharsets.UTF_8));
-    }
-
-    private void writeMultipartFile(OutputStream os, String boundary, String name, String filename,
-                                    String mimeType, byte[] data) throws Exception {
-        String contentType = mimeType == null || mimeType.trim().isEmpty() ? "audio/mpeg" : mimeType;
-        os.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
-        os.write(("Content-Disposition: form-data; name=\"" + name + "\"; filename=\"" + filename + "\"\r\n")
-                .getBytes(StandardCharsets.UTF_8));
-        os.write(("Content-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-        os.write(data);
-        os.write("\r\n".getBytes(StandardCharsets.UTF_8));
-    }
-
-    private String extractTranscriptText(String responseJson) {
-        JsonElement parsed = JsonParser.parseString(responseJson);
-        if (!parsed.isJsonObject()) {
-            return responseJson;
-        }
-
-        JsonObject root = parsed.getAsJsonObject();
-        if (root.has("text") && !root.get("text").isJsonNull()) {
-            return root.get("text").getAsString();
-        }
-        if (root.has("transcript") && !root.get("transcript").isJsonNull()) {
-            return root.get("transcript").getAsString();
-        }
-        if (root.has("results") && root.get("results").isJsonArray()) {
-            return joinTranscriptArray(root.getAsJsonArray("results"));
-        }
-        if (root.has("segments") && root.get("segments").isJsonArray()) {
-            return joinTranscriptArray(root.getAsJsonArray("segments"));
-        }
-        throw new IllegalStateException("NVIDIA ASR response did not include transcript text.");
-    }
-
-    private String joinTranscriptArray(JsonArray array) {
-        StringBuilder transcript = new StringBuilder();
-        for (JsonElement item : array) {
-            if (!item.isJsonObject()) continue;
-            JsonObject object = item.getAsJsonObject();
-            String part = null;
-            if (object.has("text") && !object.get("text").isJsonNull()) {
-                part = object.get("text").getAsString();
-            } else if (object.has("transcript") && !object.get("transcript").isJsonNull()) {
-                part = object.get("transcript").getAsString();
+        try (Response response = rivaClient.newCall(request).execute()) {
+            byte[] body = response.body() != null ? response.body().bytes() : new byte[0];
+            String grpcStatus = response.header("grpc-status");
+            if (!response.isSuccessful()) {
+                throw new IllegalStateException("NVIDIA ASR connection failed (" + response.code() + ").");
             }
-            if (part != null && !part.trim().isEmpty()) {
+            if (grpcStatus != null && !"0".equals(grpcStatus)) {
+                String message = response.header("grpc-message", "Unknown NVIDIA ASR error");
+                throw new IllegalStateException(message);
+            }
+
+            String transcript = extractTranscriptFromGrpcFrames(body);
+            if (transcript.trim().isEmpty()) {
+                throw new IllegalStateException("NVIDIA ASR did not hear speech in this file.");
+            }
+            return transcript;
+        }
+    }
+
+    private byte[] buildRecognizeRequest(byte[] pcm16le) {
+        byte[] config = buildRecognitionConfig();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeBytesField(out, 1, config);
+        writeBytesField(out, 2, pcm16le);
+        return out.toByteArray();
+    }
+
+    private byte[] buildRecognitionConfig() {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeVarintField(out, 1, 1); // LINEAR_PCM
+        writeVarintField(out, 2, 16000);
+        writeStringField(out, 3, "en-US");
+        writeVarintField(out, 4, 1);
+        writeVarintField(out, 11, 1);
+        return out.toByteArray();
+    }
+
+    private byte[] frameGrpcMessage(byte[] message) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(0);
+        out.write((message.length >> 24) & 0xff);
+        out.write((message.length >> 16) & 0xff);
+        out.write((message.length >> 8) & 0xff);
+        out.write(message.length & 0xff);
+        out.write(message, 0, message.length);
+        return out.toByteArray();
+    }
+
+    private String extractTranscriptFromGrpcFrames(byte[] body) {
+        StringBuilder transcript = new StringBuilder();
+        int offset = 0;
+        while (offset + 5 <= body.length) {
+            int compressed = body[offset] & 0xff;
+            int length = ((body[offset + 1] & 0xff) << 24)
+                    | ((body[offset + 2] & 0xff) << 16)
+                    | ((body[offset + 3] & 0xff) << 8)
+                    | (body[offset + 4] & 0xff);
+            offset += 5;
+            if (compressed != 0) {
+                throw new IllegalStateException("NVIDIA ASR returned compressed gRPC audio results.");
+            }
+            if (length < 0 || offset + length > body.length) {
+                throw new IllegalStateException("NVIDIA ASR returned an invalid gRPC response.");
+            }
+            String part = parseRecognizeResponse(body, offset, offset + length);
+            if (!part.isEmpty()) {
                 if (transcript.length() > 0) transcript.append(' ');
-                transcript.append(part.trim());
+                transcript.append(part);
+            }
+            offset += length;
+        }
+        return transcript.toString().trim();
+    }
+
+    private String parseRecognizeResponse(byte[] data, int start, int end) {
+        StringBuilder transcript = new StringBuilder();
+        ProtoReader reader = new ProtoReader(data, start, end);
+        while (reader.hasRemaining()) {
+            int tag = reader.readVarint();
+            int field = tag >> 3;
+            int wireType = tag & 7;
+            if (field == 1 && wireType == 2) {
+                byte[] result = reader.readBytes();
+                String part = parseSpeechRecognitionResult(result);
+                if (!part.isEmpty()) {
+                    if (transcript.length() > 0) transcript.append(' ');
+                    transcript.append(part);
+                }
+            } else {
+                reader.skip(wireType);
             }
         }
         return transcript.toString();
+    }
+
+    private String parseSpeechRecognitionResult(byte[] data) {
+        StringBuilder transcript = new StringBuilder();
+        ProtoReader reader = new ProtoReader(data, 0, data.length);
+        while (reader.hasRemaining()) {
+            int tag = reader.readVarint();
+            int field = tag >> 3;
+            int wireType = tag & 7;
+            if (field == 1 && wireType == 2) {
+                byte[] alternative = reader.readBytes();
+                String part = parseSpeechAlternative(alternative);
+                if (!part.isEmpty()) {
+                    if (transcript.length() > 0) transcript.append(' ');
+                    transcript.append(part);
+                }
+            } else {
+                reader.skip(wireType);
+            }
+        }
+        return transcript.toString();
+    }
+
+    private String parseSpeechAlternative(byte[] data) {
+        ProtoReader reader = new ProtoReader(data, 0, data.length);
+        while (reader.hasRemaining()) {
+            int tag = reader.readVarint();
+            int field = tag >> 3;
+            int wireType = tag & 7;
+            if (field == 1 && wireType == 2) {
+                return new String(reader.readBytes(), StandardCharsets.UTF_8).trim();
+            }
+            reader.skip(wireType);
+        }
+        return "";
+    }
+
+    private void writeVarintField(ByteArrayOutputStream out, int fieldNumber, int value) {
+        writeVarint(out, (fieldNumber << 3) | 0);
+        writeVarint(out, value);
+    }
+
+    private void writeStringField(ByteArrayOutputStream out, int fieldNumber, String value) {
+        writeBytesField(out, fieldNumber, value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void writeBytesField(ByteArrayOutputStream out, int fieldNumber, byte[] value) {
+        writeVarint(out, (fieldNumber << 3) | 2);
+        writeVarint(out, value.length);
+        out.write(value, 0, value.length);
+    }
+
+    private void writeVarint(ByteArrayOutputStream out, int value) {
+        while ((value & ~0x7f) != 0) {
+            out.write((value & 0x7f) | 0x80);
+            value >>>= 7;
+        }
+        out.write(value);
+    }
+
+    private static class ProtoReader {
+        private final byte[] data;
+        private int offset;
+        private final int end;
+
+        ProtoReader(byte[] data, int start, int end) {
+            this.data = data;
+            this.offset = start;
+            this.end = end;
+        }
+
+        boolean hasRemaining() {
+            return offset < end;
+        }
+
+        int readVarint() {
+            int result = 0;
+            int shift = 0;
+            while (offset < end && shift < 32) {
+                int b = data[offset++] & 0xff;
+                result |= (b & 0x7f) << shift;
+                if ((b & 0x80) == 0) return result;
+                shift += 7;
+            }
+            throw new IllegalStateException("Invalid protobuf varint.");
+        }
+
+        byte[] readBytes() {
+            int length = readVarint();
+            if (length < 0 || offset + length > end) {
+                throw new IllegalStateException("Invalid protobuf length.");
+            }
+            byte[] value = new byte[length];
+            System.arraycopy(data, offset, value, 0, length);
+            offset += length;
+            return value;
+        }
+
+        void skip(int wireType) {
+            if (wireType == 0) {
+                readVarint();
+            } else if (wireType == 1) {
+                offset += 8;
+            } else if (wireType == 2) {
+                int length = readVarint();
+                offset += length;
+            } else if (wireType == 5) {
+                offset += 4;
+            } else {
+                throw new IllegalStateException("Unsupported protobuf wire type: " + wireType);
+            }
+            if (offset > end) {
+                throw new IllegalStateException("Invalid protobuf skip.");
+            }
+        }
     }
 }

@@ -12,7 +12,8 @@
 - Switched the user-facing AI setup to NVIDIA-only keys.
 - Added separate NVIDIA LLM and NVIDIA ASR key inputs.
 - Added NVIDIA cloud analysis for live transcripts using NVIDIA chat completions.
-- Added NVIDIA ASR upload flow for audio-file transcription before scam analysis.
+- Added NVIDIA Riva/Parakeet gRPC upload flow for audio-file transcription before scam analysis.
+- Added Android audio decoding and 16 kHz mono PCM conversion before sending files to NVIDIA ASR.
 - Added Firestore call history persistence.
 - Added Firestore blocked number persistence.
 - Added call history screen, filters, and CSV export.
@@ -25,7 +26,7 @@
 
 ## In Progress / Next
 
-- Test uploaded audio transcription with the user's NVIDIA ASR account limits and supported formats.
+- Test uploaded audio transcription with the user's NVIDIA ASR account limits.
 - Add a backend proxy only if the NVIDIA ASR account requires server-side mediation.
 - Improve live call transcript reliability across Android devices.
 - Add automated instrumentation tests for call state transitions.
