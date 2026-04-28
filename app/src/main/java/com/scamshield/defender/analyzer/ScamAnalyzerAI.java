@@ -30,15 +30,8 @@ public class ScamAnalyzerAI {
     private static final float SCAM_CONFIRMED_THRESHOLD = 0.70f;
     private static final float CLOUD_TRIGGER_THRESHOLD = 0.30f;
     private static final String PREFS_NAME = "scam_shield_prefs";
-    private static final String PREF_AI_PROVIDER = "ai_provider";
-    private static final String PREF_GEMINI_API_KEY = "gemini_api_key";
-    private static final String PREF_NVIDIA_API_KEY = "nvidia_api_key";
-    private static final String PROVIDER_GEMINI = "gemini";
-    private static final String PROVIDER_NVIDIA = "nvidia";
-    private static final String GEMINI_MODEL = "gemini-2.0-flash";
-    private static final String GEMINI_ENDPOINT =
-            "https://generativelanguage.googleapis.com/v1beta/models/" +
-                    GEMINI_MODEL + ":generateContent?key=";
+    private static final String PREF_NVIDIA_LLM_API_KEY = "nvidia_llm_api_key";
+    private static final String PREF_NVIDIA_ASR_API_KEY = "nvidia_asr_api_key";
     private static final String NVIDIA_MODEL = "meta/llama-3.1-8b-instruct";
     private static final String NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
 
@@ -309,90 +302,20 @@ public class ScamAnalyzerAI {
     private void triggerCloudAnalysis(String transcript) {
         cloudAnalysisDone = true;
         SharedPreferences prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        String provider = prefs.getString(PREF_AI_PROVIDER, PROVIDER_GEMINI);
-        String apiKey = getCloudApiKey(prefs, provider);
+        String apiKey = prefs.getString(PREF_NVIDIA_LLM_API_KEY, "");
         if (apiKey == null || apiKey.trim().isEmpty()) {
-            Log.w(TAG, "Cloud AI API key missing. Local analysis remains active.");
+            Log.w(TAG, "NVIDIA LLM API key missing. Local analysis remains active.");
             return;
         }
 
         cloudExecutor.execute(() -> {
             try {
-                CloudResponse cloud = PROVIDER_NVIDIA.equals(provider)
-                        ? callNvidia(apiKey.trim(), transcript)
-                        : callGemini(apiKey.trim(), transcript);
+                CloudResponse cloud = callNvidia(apiKey.trim(), transcript);
                 applyCloudResult(cloud);
             } catch (Exception e) {
-                Log.w(TAG, "Cloud analysis failed. Local analysis remains active: " + e.getMessage());
+                Log.w(TAG, "NVIDIA analysis failed. Local analysis remains active: " + e.getMessage());
             }
         });
-    }
-
-    private String getCloudApiKey(SharedPreferences prefs, String provider) {
-        if (PROVIDER_NVIDIA.equals(provider)) {
-            return prefs.getString(PREF_NVIDIA_API_KEY, "");
-        }
-        return prefs.getString(PREF_GEMINI_API_KEY, "");
-    }
-
-    private CloudResponse callGemini(String apiKey, String transcript) throws Exception {
-        URL url = new URL(GEMINI_ENDPOINT + apiKey);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("POST");
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(15000);
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setDoOutput(true);
-
-        String prompt = "You are Call Trace analyzing an English phone-call transcript in real time. " +
-                "Return only JSON with keys: is_scam boolean, confidence number 0-1, " +
-                "threat_type string, reasoning string, keywords_found string array. " +
-                "Flag OTP, bank or KYC impersonation, urgent account freeze, remote access, legal threats, " +
-                "refund traps, and credential requests. Transcript: " + transcript;
-
-        JsonObject textPart = new JsonObject();
-        textPart.addProperty("text", prompt);
-
-        JsonArray parts = new JsonArray();
-        parts.add(textPart);
-
-        JsonObject content = new JsonObject();
-        content.add("parts", parts);
-
-        JsonArray contents = new JsonArray();
-        contents.add(content);
-
-        JsonObject generationConfig = new JsonObject();
-        generationConfig.addProperty("temperature", 0.1);
-        generationConfig.addProperty("responseMimeType", "application/json");
-
-        JsonObject body = new JsonObject();
-        body.add("contents", contents);
-        body.add("generationConfig", generationConfig);
-
-        try (OutputStream os = conn.getOutputStream()) {
-            byte[] input = gson.toJson(body).getBytes(StandardCharsets.UTF_8);
-            os.write(input, 0, input.length);
-        }
-
-        int code = conn.getResponseCode();
-        BufferedReader reader = new BufferedReader(new InputStreamReader(
-                code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(),
-                StandardCharsets.UTF_8));
-        StringBuilder response = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            response.append(line);
-        }
-        reader.close();
-        conn.disconnect();
-
-        if (code < 200 || code >= 300) {
-            throw new IllegalStateException("Gemini HTTP " + code + ": " + response);
-        }
-
-        String modelText = extractGeminiText(response.toString());
-        return gson.fromJson(modelText, CloudResponse.class);
     }
 
     private CloudResponse callNvidia(String apiKey, String transcript) throws Exception {
@@ -450,20 +373,6 @@ public class ScamAnalyzerAI {
 
         String modelText = extractChatCompletionText(response.toString());
         return gson.fromJson(stripJsonFence(modelText), CloudResponse.class);
-    }
-
-    private String extractGeminiText(String responseJson) {
-        JsonObject root = JsonParser.parseString(responseJson).getAsJsonObject();
-        JsonArray candidates = root.getAsJsonArray("candidates");
-        if (candidates == null || candidates.size() == 0) {
-            throw new IllegalStateException("Gemini returned no candidates");
-        }
-        JsonObject content = candidates.get(0).getAsJsonObject().getAsJsonObject("content");
-        JsonArray parts = content.getAsJsonArray("parts");
-        if (parts == null || parts.size() == 0) {
-            throw new IllegalStateException("Gemini returned no text parts");
-        }
-        return parts.get(0).getAsJsonObject().get("text").getAsString();
     }
 
     private String extractChatCompletionText(String responseJson) {
@@ -537,153 +446,19 @@ public class ScamAnalyzerAI {
 
     public void analyzeAudioFile(byte[] audioData, String mimeType, AudioAnalysisCallback callback) {
         SharedPreferences prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        String apiKey = prefs.getString(PREF_GEMINI_API_KEY, "");
-        if (apiKey == null || apiKey.trim().isEmpty()) {
-            callback.onError("Gemini API key is required for audio upload. NVIDIA is enabled for live transcript analysis only.");
+        String asrKey = prefs.getString(PREF_NVIDIA_ASR_API_KEY, "");
+        String llmKey = prefs.getString(PREF_NVIDIA_LLM_API_KEY, "");
+        if (asrKey == null || asrKey.trim().isEmpty()) {
+            callback.onError("NVIDIA ASR/Riva API key is required for audio transcription.");
+            return;
+        }
+        if (llmKey == null || llmKey.trim().isEmpty()) {
+            callback.onError("NVIDIA LLM API key is required for scam analysis.");
             return;
         }
 
         cloudExecutor.execute(() -> {
-            try {
-                String base64Audio = android.util.Base64.encodeToString(audioData, android.util.Base64.NO_WRAP);
-
-                String prompt = "You are Call Trace. Analyze this audio file for scam indicators. " +
-                    "Transcribe all speech in the audio. Then determine if this is a scam call. " +
-                    "Return ONLY valid JSON with these keys: " +
-                    "transcript (string - full transcription of all speech), " +
-                    "is_scam (boolean), " +
-                    "confidence (number 0-1), " +
-                    "threat_type (string - one of: banking, kyc, urgency, authority, lottery, tech_support, threats, call_bomber, none), " +
-                    "risk_level (string - one of: HIGH RISK, MEDIUM RISK, LOW RISK, SAFE), " +
-                    "reasoning (string - brief explanation), " +
-                    "keywords_found (string array). " +
-                    "Flag OTP requests, bank impersonation, KYC fraud, urgent threats, remote access, legal threats, refund traps.";
-
-                JsonObject textPart = new JsonObject();
-                textPart.addProperty("text", prompt);
-
-                JsonObject audioInlineData = new JsonObject();
-                audioInlineData.addProperty("mime_type", mimeType);
-                audioInlineData.addProperty("data", base64Audio);
-                JsonObject audioPart = new JsonObject();
-                audioPart.add("inline_data", audioInlineData);
-
-                JsonArray parts = new JsonArray();
-                parts.add(textPart);
-                parts.add(audioPart);
-
-                JsonObject content = new JsonObject();
-                content.add("parts", parts);
-                JsonArray contents = new JsonArray();
-                contents.add(content);
-
-                JsonObject genConfig = new JsonObject();
-                genConfig.addProperty("temperature", 0.1);
-                genConfig.addProperty("responseMimeType", "application/json");
-
-                JsonObject body = new JsonObject();
-                body.add("contents", contents);
-                body.add("generationConfig", genConfig);
-
-                URL url = new URL(GEMINI_ENDPOINT + apiKey.trim());
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setConnectTimeout(30000);
-                conn.setReadTimeout(90000);
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setDoOutput(true);
-
-                byte[] jsonPayload = gson.toJson(body).getBytes(StandardCharsets.UTF_8);
-                try (OutputStream os = conn.getOutputStream()) {
-                    os.write(jsonPayload, 0, jsonPayload.length);
-                }
-
-                // ── Retry loop for rate-limit (429) errors ──
-                int maxRetries = 2;
-                int retryCount = 0;
-                int code;
-                StringBuilder response;
-
-                while (true) {
-                    code = conn.getResponseCode();
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(
-                        code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(),
-                        StandardCharsets.UTF_8));
-                    response = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        response.append(line);
-                    }
-                    reader.close();
-                    conn.disconnect();
-
-                    if (code == 429 && retryCount < maxRetries) {
-                        retryCount++;
-                        long waitMs = (long) (Math.pow(2, retryCount) * 1000); // 2s, 4s
-                        Log.w(TAG, "Rate limited (429), retry " + retryCount + "/" + maxRetries
-                                + " after " + waitMs + "ms");
-                        callback.onError("RETRY: API rate limited — retrying in " + (waitMs/1000) + "s...");
-                        Thread.sleep(waitMs);
-
-                        // Re-open connection for retry
-                        conn = (HttpURLConnection) url.openConnection();
-                        conn.setRequestMethod("POST");
-                        conn.setConnectTimeout(30000);
-                        conn.setReadTimeout(90000);
-                        conn.setRequestProperty("Content-Type", "application/json");
-                        conn.setDoOutput(true);
-                        try (OutputStream retryOs = conn.getOutputStream()) {
-                            retryOs.write(jsonPayload, 0, jsonPayload.length);
-                        }
-                        continue;
-                    }
-                    break;
-                }
-
-                // ── Handle non-success responses with clean messages ──
-                if (code < 200 || code >= 300) {
-                    String errorMsg;
-                    switch (code) {
-                        case 429:
-                            errorMsg = "API quota exceeded — please wait 1-2 minutes and try again";
-                            break;
-                        case 401:
-                        case 403:
-                            errorMsg = "Invalid API key — check your Gemini API key in settings";
-                            break;
-                        case 400:
-                            errorMsg = "Audio format not supported — try MP3, WAV, or M4A";
-                            break;
-                        default:
-                            errorMsg = "Server error (HTTP " + code + ") — try again later";
-                            break;
-                    }
-                    throw new IllegalStateException(errorMsg);
-                }
-
-                String modelText = extractGeminiText(response.toString());
-                AudioFileResponse audioResp = gson.fromJson(modelText, AudioFileResponse.class);
-
-                AnalysisResult result = new AnalysisResult();
-                result.confidence = audioResp.confidence;
-                result.isScam = audioResp.isScam;
-                result.threatType = audioResp.threatType != null ? audioResp.threatType : "none";
-                result.reasoning = audioResp.reasoning != null ? audioResp.reasoning : "";
-                result.keywordsFound = audioResp.keywordsFound != null ? audioResp.keywordsFound : new ArrayList<>();
-                result.fromCloud = true;
-
-                String transcript = audioResp.transcript != null ? audioResp.transcript : "No speech detected";
-
-                callback.onTranscriptReady(transcript);
-                callback.onAnalysisComplete(result, transcript);
-
-                Log.i(TAG, "Audio file analysis: " + (audioResp.isScam ? "SCAM" : "SAFE")
-                        + " (" + (audioResp.confidence * 100) + "%) Risk: " + audioResp.riskLevel);
-
-            } catch (Exception e) {
-                Log.e(TAG, "Audio file analysis failed", e);
-                callback.onError("Analysis failed: " + e.getMessage());
-            }
+            callback.onError("NVIDIA ASR/Riva audio transcription is configured with your ASR key, but the Android Riva gRPC client/proxy is not installed yet.");
         });
     }
 }

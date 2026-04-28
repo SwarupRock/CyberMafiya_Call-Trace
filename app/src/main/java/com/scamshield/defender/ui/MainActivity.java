@@ -71,11 +71,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "Dashboard";
     private static final int PERMISSION_REQUEST_CODE = 1001;
     private static final String PREFS_NAME = "scam_shield_prefs";
-    private static final String PREF_AI_PROVIDER = "ai_provider";
-    private static final String PREF_GEMINI_API_KEY = "gemini_api_key";
-    private static final String PREF_NVIDIA_API_KEY = "nvidia_api_key";
-    private static final String PROVIDER_GEMINI = "gemini";
-    private static final String PROVIDER_NVIDIA = "nvidia";
+    private static final String PREF_NVIDIA_LLM_API_KEY = "nvidia_llm_api_key";
+    private static final String PREF_NVIDIA_ASR_API_KEY = "nvidia_asr_api_key";
     private static final String PREF_BACKGROUND_PROMPTED = "background_prompted";
 
     // ── Broadcast Actions (received from CallDefenderService) ─────
@@ -98,7 +95,7 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout layoutRecentCalls, layoutQuarantineMessages;
 
     private boolean isDefenderRunning = false;
-    private boolean startAfterGeminiKey = false;
+    private boolean startAfterAiKeys = false;
     private boolean startAfterPermissions = false;
     private StringBuilder transcriptBuilder = new StringBuilder();
     private ScamAnalyzerAI audioAnalyzer;
@@ -175,9 +172,9 @@ public class MainActivity extends AppCompatActivity {
             Log.i(TAG, "🎵 Audio shared from external app: " + audioUri);
 
             if (!hasAudioUploadApiKey()) {
-                Toast.makeText(this, "Gemini key required for shared audio. NVIDIA works for live calls.",
+                Toast.makeText(this, "NVIDIA ASR key required for shared audio.",
                         Toast.LENGTH_LONG).show();
-                promptForGeminiApiKey(false);
+                promptForNvidiaApiKeys(false);
                 return;
             }
 
@@ -240,10 +237,10 @@ public class MainActivity extends AppCompatActivity {
             if (isDefenderRunning) {
                 stopDefender();
             } else {
-                if (!hasGeminiApiKey()) {
+                if (!hasNvidiaAnalysisKey()) {
                     Toast.makeText(this, "Add an AI API key before starting Call Trace", Toast.LENGTH_LONG).show();
-                    startAfterGeminiKey = true;
-                    promptForGeminiApiKey(false);
+                    startAfterAiKeys = true;
+                    promptForNvidiaApiKeys(false);
                     return;
                 }
                 if (hasAllPermissions()) {
@@ -274,7 +271,7 @@ public class MainActivity extends AppCompatActivity {
         panel.addView(title);
 
         TextView subtitle = new TextView(this);
-        subtitle.setText(hasGeminiApiKey() ? getAiProviderLabel() + " AI connected" : "AI key required");
+        subtitle.setText(hasNvidiaAnalysisKey() ? "NVIDIA AI connected" : "NVIDIA key required");
         subtitle.setTextColor(getColor(R.color.text_muted));
         subtitle.setTextSize(12);
         subtitle.setTypeface(Typeface.MONOSPACE);
@@ -284,12 +281,12 @@ public class MainActivity extends AppCompatActivity {
         subtitleParams.setMargins(0, dp(6), 0, dp(14));
         panel.addView(subtitle, subtitleParams);
 
-        Button geminiButton = createMenuButton("AI API KEY", R.drawable.menu_button_cyan, R.color.cyber_cyan);
+        Button nvidiaButton = createMenuButton("AI API KEY", R.drawable.menu_button_cyan, R.color.cyber_cyan);
         Button historyButton = createMenuButton("CALL HISTORY", R.drawable.menu_button_cyan, R.color.cyber_cyan);
         Button backgroundButton = createMenuButton("BACKGROUND PROTECTION", R.drawable.menu_button_cyan, R.color.cyber_cyan);
         Button logoutButton = createMenuButton("LOGOUT", R.drawable.menu_button_red, R.color.neon_crimson);
 
-        panel.addView(geminiButton);
+        panel.addView(nvidiaButton);
         panel.addView(historyButton);
         panel.addView(backgroundButton);
         panel.addView(logoutButton);
@@ -298,9 +295,9 @@ public class MainActivity extends AppCompatActivity {
                 .setView(panel)
                 .create();
 
-        geminiButton.setOnClickListener(v -> {
+        nvidiaButton.setOnClickListener(v -> {
             dialog.dismiss();
-            promptForGeminiApiKey(false);
+            promptForNvidiaApiKeys(false);
         });
         historyButton.setOnClickListener(v -> {
             dialog.dismiss();
@@ -367,7 +364,7 @@ public class MainActivity extends AppCompatActivity {
                 prefs.getInt("stat_scams_blocked", 0)));
         tvCommunityReports.setText(String.valueOf(
                 prefs.getInt("stat_community_reports", 0)));
-        tvAiSource.setText(hasGeminiApiKey() ? getAiProviderLabel() + " AI READY" : "AI KEY REQUIRED");
+        tvAiSource.setText(hasNvidiaAnalysisKey() ? "NVIDIA AI READY" : "NVIDIA KEY REQUIRED");
         loadRecentCallLogRows();
         loadQuarantineMessages();
     }
@@ -377,8 +374,8 @@ public class MainActivity extends AppCompatActivity {
             requestPermissions();
             return;
         }
-        if (!hasGeminiApiKey()) {
-            promptForGeminiApiKey(true);
+        if (!hasNvidiaAnalysisKey()) {
+            promptForNvidiaApiKeys(true);
             return;
         }
         promptBackgroundRunPermission(true);
@@ -430,44 +427,39 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private boolean hasGeminiApiKey() {
-        String key = getActiveAiApiKey();
+    private boolean hasNvidiaAnalysisKey() {
+        String key = getNvidiaLlmApiKey();
         return key != null && !key.trim().isEmpty();
     }
 
-    private String getGeminiApiKey() {
+    private boolean hasNvidiaAsrKey() {
+        String key = getNvidiaAsrApiKey();
+        return key != null && !key.trim().isEmpty();
+    }
+
+    private String getNvidiaLlmApiKey() {
         return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getString(PREF_GEMINI_API_KEY, "");
+                .getString(PREF_NVIDIA_LLM_API_KEY, "");
+    }
+
+    private String getNvidiaAsrApiKey() {
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getString(PREF_NVIDIA_ASR_API_KEY, "");
     }
 
     private boolean hasAudioUploadApiKey() {
-        String key = getGeminiApiKey();
-        return key != null && !key.trim().isEmpty();
-    }
-
-    private String getNvidiaApiKey() {
-        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getString(PREF_NVIDIA_API_KEY, "");
-    }
-
-    private String getAiProvider() {
-        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getString(PREF_AI_PROVIDER, PROVIDER_GEMINI);
-    }
-
-    private String getActiveAiApiKey() {
-        return PROVIDER_NVIDIA.equals(getAiProvider()) ? getNvidiaApiKey() : getGeminiApiKey();
+        return hasNvidiaAsrKey() && hasNvidiaAnalysisKey();
     }
 
     private String getAiProviderLabel() {
-        return PROVIDER_NVIDIA.equals(getAiProvider()) ? "NVIDIA" : "GEMINI";
+        return "NVIDIA";
     }
 
     private boolean isNvidiaKey(String key) {
         return key != null && key.trim().toLowerCase().startsWith("nvapi-");
     }
 
-    private String maskGeminiKey(String key) {
+    private String maskKey(String key) {
         if (key == null || key.trim().isEmpty()) {
             return "No key saved";
         }
@@ -476,8 +468,22 @@ public class MainActivity extends AppCompatActivity {
         return "Saved key: " + "**** **** " + trimmed.substring(trimmed.length() - visible);
     }
 
-    private void promptForGeminiApiKey(boolean firstRun) {
-        boolean keyExists = hasGeminiApiKey();
+    private String getNvidiaKeySummary() {
+        return "LLM: " + maskKey(getNvidiaLlmApiKey()) + "\nASR: " + maskKey(getNvidiaAsrApiKey());
+    }
+
+    @Deprecated
+    private boolean hasNvidiaApiKeys() {
+        return hasNvidiaAnalysisKey();
+    }
+
+    @Deprecated
+    private String maskNvidiaKey(String key) {
+        return maskKey(key);
+    }
+
+    private void promptForNvidiaApiKeys(boolean firstRun) {
+        boolean keyExists = hasNvidiaAnalysisKey() && hasNvidiaAsrKey();
         boolean[] editingKey = { !keyExists };
 
         LinearLayout container = new LinearLayout(this);
@@ -497,7 +503,7 @@ public class MainActivity extends AppCompatActivity {
         container.addView(eyebrow);
 
         TextView title = new TextView(this);
-        title.setText(keyExists ? getAiProviderLabel() + " Ready" : "AI API Key");
+        title.setText(keyExists ? "NVIDIA Ready" : "NVIDIA API Keys");
         title.setTextColor(getColor(R.color.text_primary));
         title.setTextSize(22);
         title.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -509,8 +515,8 @@ public class MainActivity extends AppCompatActivity {
 
         TextView message = new TextView(this);
         message.setText(keyExists
-                ? "An " + getAiProviderLabel() + " API key is already saved on this device. Keep it, or replace it with a new key."
-                : "Paste a Gemini key or an NVIDIA key. NVIDIA is used for live transcript analysis; Gemini is still needed for audio upload transcription.");
+                ? "NVIDIA analysis and ASR keys are saved on this device. Keep them, or replace them below."
+                : "Paste both NVIDIA keys: LLM for scam analysis, ASR/Riva for uploaded audio transcription.");
         message.setTextColor(getColor(R.color.text_secondary));
         message.setTextSize(13);
         message.setLineSpacing(dp(2), 1.0f);
@@ -530,7 +536,7 @@ public class MainActivity extends AppCompatActivity {
         container.addView(inputLabel);
 
         TextView savedState = new TextView(this);
-        savedState.setText(maskGeminiKey(getActiveAiApiKey()));
+        savedState.setText(getNvidiaKeySummary());
         savedState.setTextColor(getColor(R.color.cyber_green));
         savedState.setTextSize(13);
         savedState.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -545,7 +551,7 @@ public class MainActivity extends AppCompatActivity {
 
         EditText input = new EditText(this);
         input.setSingleLine(true);
-        input.setHint(keyExists ? "Paste replacement Gemini or NVIDIA key" : "Paste Gemini or NVIDIA key");
+        input.setHint(keyExists ? "Paste replacement NVIDIA LLM key" : "Paste NVIDIA LLM key");
         input.setTextColor(getColor(R.color.text_primary));
         input.setHintTextColor(getColor(R.color.text_muted));
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
@@ -559,10 +565,26 @@ public class MainActivity extends AppCompatActivity {
         input.setVisibility(keyExists ? View.GONE : View.VISIBLE);
         container.addView(input, inputParams);
 
+        EditText asrInput = new EditText(this);
+        asrInput.setSingleLine(true);
+        asrInput.setHint(keyExists ? "Paste replacement NVIDIA ASR key" : "Paste NVIDIA ASR/Riva key");
+        asrInput.setTextColor(getColor(R.color.text_primary));
+        asrInput.setHintTextColor(getColor(R.color.text_muted));
+        asrInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        asrInput.setBackgroundResource(R.drawable.login_input_bg);
+        asrInput.setTypeface(Typeface.MONOSPACE);
+        asrInput.setPadding(dp(14), 0, dp(14), 0);
+        LinearLayout.LayoutParams asrInputParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(52));
+        asrInputParams.setMargins(0, dp(9), 0, 0);
+        asrInput.setVisibility(keyExists ? View.GONE : View.VISIBLE);
+        container.addView(asrInput, asrInputParams);
+
         TextView helper = new TextView(this);
         helper.setText(keyExists
-                ? "Call Trace activation is allowed because " + getAiProviderLabel() + " is connected."
-                : "Call Trace activation stays locked until an AI key is saved.");
+                ? "Call Trace is ready for NVIDIA live analysis and audio transcription setup."
+                : "Call Trace starts after the NVIDIA LLM key is saved. Audio upload also needs the ASR key.");
         helper.setTextColor(getColor(R.color.text_muted));
         helper.setTextSize(11);
         helper.setTypeface(Typeface.MONOSPACE);
@@ -614,29 +636,42 @@ public class MainActivity extends AppCompatActivity {
                 inputLabel.setText("NEW API KEY");
                 savedState.setVisibility(View.GONE);
                 input.setVisibility(View.VISIBLE);
+                asrInput.setVisibility(View.VISIBLE);
                 input.requestFocus();
-                helper.setText("Saving replaces the key stored on this device.");
+                helper.setText("Saving replaces the NVIDIA keys stored on this device.");
                 cancelButton.setText("CANCEL");
                 saveButton.setText("SAVE KEY");
                 return;
             }
             String key = input.getText().toString().trim();
+            String asrKey = asrInput.getText().toString().trim();
             if (key.isEmpty()) {
-                input.setError("API key required");
+                input.setError("NVIDIA LLM key required");
                 return;
             }
-            String provider = isNvidiaKey(key) ? PROVIDER_NVIDIA : PROVIDER_GEMINI;
+            if (!isNvidiaKey(key)) {
+                input.setError("NVIDIA keys usually start with nvapi-");
+                return;
+            }
+            if (asrKey.isEmpty()) {
+                asrInput.setError("NVIDIA ASR key required for audio upload");
+                return;
+            }
+            if (!isNvidiaKey(asrKey)) {
+                asrInput.setError("NVIDIA keys usually start with nvapi-");
+                return;
+            }
             getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                    .putString(PREF_AI_PROVIDER, provider)
-                    .putString(PROVIDER_NVIDIA.equals(provider) ? PREF_NVIDIA_API_KEY : PREF_GEMINI_API_KEY, key)
+                    .putString(PREF_NVIDIA_LLM_API_KEY, key)
+                    .putString(PREF_NVIDIA_ASR_API_KEY, asrKey)
                     .apply();
-            tvAiSource.setText(getAiProviderLabel() + " AI READY");
-            Toast.makeText(this, getAiProviderLabel() + " AI connected", Toast.LENGTH_SHORT).show();
+            tvAiSource.setText("NVIDIA AI READY");
+            Toast.makeText(this, "NVIDIA APIs connected", Toast.LENGTH_SHORT).show();
             dialog.dismiss();
-            if (startAfterGeminiKey && hasAllPermissions() && !isDefenderRunning) {
-                startAfterGeminiKey = false;
+            if (startAfterAiKeys && hasAllPermissions() && !isDefenderRunning) {
+                startAfterAiKeys = false;
                 startDefender();
-            } else if (startAfterGeminiKey && !hasAllPermissions()) {
+            } else if (startAfterAiKeys && !hasAllPermissions()) {
                 startAfterPermissions = true;
                 requestPermissions();
             } else if (firstRun) {
@@ -984,7 +1019,7 @@ public class MainActivity extends AppCompatActivity {
         tvThreatType.setText("No threats detected");
         tvThreatType.setTextColor(getColor(R.color.text_muted));
         tvKeywords.setVisibility(View.GONE);
-        tvAiSource.setText(hasGeminiApiKey() ? getAiProviderLabel() + " AI READY" : "AI KEY REQUIRED");
+        tvAiSource.setText(hasNvidiaAnalysisKey() ? "NVIDIA AI READY" : "NVIDIA KEY REQUIRED");
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -992,10 +1027,10 @@ public class MainActivity extends AppCompatActivity {
     // ═══════════════════════════════════════════════════════════════
 
     private void startDefender() {
-        if (!hasGeminiApiKey()) {
+        if (!hasNvidiaAnalysisKey()) {
             Toast.makeText(this, "Add an AI API key before starting Call Trace", Toast.LENGTH_LONG).show();
-            startAfterGeminiKey = true;
-            promptForGeminiApiKey(false);
+            startAfterAiKeys = true;
+            promptForNvidiaApiKeys(false);
             return;
         }
         Intent serviceIntent = new Intent(this, CallDefenderService.class);
@@ -1030,7 +1065,7 @@ public class MainActivity extends AppCompatActivity {
             tvCallState.setText("MONITORING");
             tvCallState.setTextColor(getColor(R.color.cyber_cyan));
             tvCallerNumber.setText("Waiting for incoming call...");
-            tvAiSource.setText(hasGeminiApiKey() ? getAiProviderLabel() + " AI READY" : "AI KEY REQUIRED");
+            tvAiSource.setText(hasNvidiaAnalysisKey() ? "NVIDIA AI READY" : "NVIDIA KEY REQUIRED");
         } else {
             btnToggleShield.setText("START TRACE");
             btnToggleShield.setBackgroundTintList(
@@ -1042,7 +1077,7 @@ public class MainActivity extends AppCompatActivity {
             tvCallState.setText("TRACE OFF");
             tvCallState.setTextColor(getColor(R.color.text_muted));
             tvCallerNumber.setText("Start Call Trace to begin monitoring");
-            tvAiSource.setText(hasGeminiApiKey() ? getAiProviderLabel() + " AI READY" : "AI KEY REQUIRED");
+            tvAiSource.setText(hasNvidiaAnalysisKey() ? "NVIDIA AI READY" : "NVIDIA KEY REQUIRED");
         }
     }
 
@@ -1086,14 +1121,14 @@ public class MainActivity extends AppCompatActivity {
                 loadQuarantineMessages();
                 if (startAfterPermissions) {
                     startAfterPermissions = false;
-                    if (hasGeminiApiKey()) {
+                    if (hasNvidiaAnalysisKey()) {
                         startDefender();
                     } else {
-                        startAfterGeminiKey = true;
-                        promptForGeminiApiKey(false);
+                        startAfterAiKeys = true;
+                        promptForNvidiaApiKeys(false);
                     }
-                } else if (!hasGeminiApiKey()) {
-                    promptForGeminiApiKey(true);
+                } else if (!hasNvidiaAnalysisKey()) {
+                    promptForNvidiaApiKeys(true);
                 } else {
                     promptBackgroundRunPermission(true);
                 }
@@ -1138,8 +1173,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void launchAudioPicker() {
         if (!hasAudioUploadApiKey()) {
-            Toast.makeText(this, "Gemini key required for audio upload. NVIDIA works for live calls.", Toast.LENGTH_LONG).show();
-            promptForGeminiApiKey(false);
+            Toast.makeText(this, "NVIDIA ASR key required for audio upload.", Toast.LENGTH_LONG).show();
+            promptForNvidiaApiKeys(false);
             return;
         }
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
@@ -1149,7 +1184,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void processAudioFile(Uri audioUri) {
-        tvTranscript.setText("⏳ ANALYZING AUDIO FILE...\n\nSending to Gemini AI for transcription and scam analysis...");
+        tvTranscript.setText("⏳ ANALYZING AUDIO FILE...\n\nPreparing NVIDIA ASR transcription and scam analysis...");
         tvTranscript.setTextColor(getColor(R.color.neon_amber));
         btnUploadAudio.setEnabled(false);
         btnUploadAudio.setText("⏳ ANALYZING...");
@@ -1222,7 +1257,7 @@ public class MainActivity extends AppCompatActivity {
                                 tvKeywords.setText(String.join(", ", result.keywordsFound));
                             }
                             if (tvAiSource != null) {
-                                tvAiSource.setText("GEMINI AI · FILE ANALYSIS");
+                                tvAiSource.setText("NVIDIA AI · FILE ANALYSIS");
                             }
 
                             // Update transcript with full analysis

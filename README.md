@@ -18,19 +18,19 @@ Call Trace is an Android-first scam call defense app built to warn users during 
 - Blocked-number history in Firestore
 - Call history screen with filters and CSV export
 - SMS scam/OTP quarantine logic
-- Audio file upload analysis through Gemini
 - NVIDIA API support for live transcript analysis through NVIDIA chat completions
+- NVIDIA ASR/Riva key storage for uploaded audio transcription setup
 - PWA dashboard prototype assets
 - Firebase Data Connect schema and generated Android connector files
 
 ## AI Providers
 
-Call Trace supports two cloud AI modes:
+Call Trace uses NVIDIA APIs only:
 
-- **Gemini**: live transcript analysis and uploaded audio transcription/analysis.
-- **NVIDIA**: live transcript analysis using NVIDIA's OpenAI-compatible chat completions endpoint.
+- **NVIDIA LLM API key**: live transcript scam analysis using NVIDIA's OpenAI-compatible chat completions endpoint.
+- **NVIDIA ASR/Riva API key**: uploaded audio transcription setup for NVIDIA Parakeet/Riva ASR.
 
-NVIDIA chat models do not transcribe uploaded audio files directly. NVIDIA audio transcription requires NVIDIA Riva/ASR, which is a separate gRPC API. That is tracked as a next step.
+NVIDIA chat models do not transcribe uploaded audio files directly. NVIDIA audio transcription requires NVIDIA Riva/ASR, which is a separate gRPC API. The app now collects the ASR key separately so the Riva client/proxy can be wired next.
 
 ## Firebase Setup
 
@@ -85,6 +85,6 @@ app/build/outputs/apk/debug/app-debug.apk
 ## Current Limitations
 
 - Live speech-to-text depends on Android speech recognition and microphone/call audio availability.
-- NVIDIA support currently analyzes text transcripts only.
-- Uploaded audio transcription with NVIDIA requires adding NVIDIA Riva/ASR.
+- NVIDIA live analysis works on text transcripts.
+- Uploaded audio transcription requires completing the NVIDIA Riva/ASR gRPC client or backend proxy.
 - Some Android call blocking APIs depend on device permissions, default dialer restrictions, and OEM behavior.
