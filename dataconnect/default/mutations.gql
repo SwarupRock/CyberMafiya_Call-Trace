@@ -1,0 +1,38 @@
+mutation UpsertUserProfile($phoneNumber: String, $email: String, $country: String) @auth(level: USER) {
+  userProfile_upsert(data: {
+    id_expr: "auth.uid",
+    phoneNumber: $phoneNumber,
+    email: $email,
+    country: $country
+  })
+}
+
+mutation AddCallLog($phoneNumber: String!, $callDurationSeconds: Int!, $scamScore: Float!, $isScam: Boolean!, $deepfakeScore: Float!) @auth(level: USER) {
+  callLog_insert(data: {
+    userId_expr: "auth.uid",
+    phoneNumber: $phoneNumber,
+    callDurationSeconds: $callDurationSeconds,
+    scamScore: $scamScore,
+    isScam: $isScam,
+    deepfakeScore: $deepfakeScore
+  })
+}
+
+mutation BlockNumber($phoneNumber: String!, $reason: String!, $scamScore: Float!) @auth(level: USER) {
+  blockedNumber_insert(data: {
+    phoneNumber: $phoneNumber,
+    blockedBy_expr: "auth.uid",
+    reason: $reason,
+    scamScore: $scamScore,
+    reportCount: 1
+  })
+}
+
+mutation UpsertScamNumber($phoneNumber: String!, $totalReports: Int!, $avgScamScore: Float!, $isVerifiedScam: Boolean!) @auth(level: USER) {
+  scamNumber_upsert(data: {
+    id: $phoneNumber,
+    totalReports: $totalReports,
+    avgScamScore: $avgScamScore,
+    isVerifiedScam: $isVerifiedScam
+  })
+}

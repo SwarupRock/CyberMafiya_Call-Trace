@@ -8,6 +8,8 @@ import android.app.Service;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -16,6 +18,7 @@ import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.provider.BlockedNumberContract;
+import android.provider.ContactsContract;
 import android.telephony.PhoneStateListener;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
@@ -28,25 +31,29 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import com.scamshield.defender.R;
 import com.scamshield.defender.analyzer.ScamAnalyzerAI;
 import com.scamshield.defender.analyzer.SpeechToTextEngine;
-import com.scamshield.defender.model.BlockedNumber;
 import com.scamshield.defender.model.CallLog;
 import com.scamshield.defender.network.FirebaseClient;
+import com.scamshield.defender.network.FirestoreHelper;
 import com.scamshield.defender.ui.MainActivity;
 
-import java.util.List;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.Map;
 
 /**
  * ═══════════════════════════════════════════════════════════════════
  * CallDefenderService — Foreground Service with Real-Time AI
  * ═══════════════════════════════════════════════════════════════════
  *
- * Core engine of Scam Shield AI. Runs as a foreground service to:
+ * Core engine of Call Trace. Runs as a foreground service to:
  *   1. Listen for phone state changes (ringing → off-hook → idle)
  *   2. Stream speech-to-text during active calls (NO recording/saving)
  *   3. Feed transcript to multi-layer AI analyzer in real-time
  *   4. Broadcast live updates to the dashboard UI
  *   5. Trigger double-vibration alert when scam detected
  *   6. Auto-block the scammer's number when call ends
+ *   7. Save call transcript + analysis to Firestore
+ *   8. Detect call bombers (3+ rapid calls from same number)
  */
 @SuppressWarnings("deprecation")
 public class CallDefenderService extends Service {
@@ -55,8 +62,12 @@ public class CallDefenderService extends Service {
 
     // ── Notification ─────────────────────────────────────────────
     private static final String CHANNEL_ID = "scam_shield_channel";
-    private static final String CHANNEL_NAME = "Scam Shield Defender";
+    private static final String CHANNEL_NAME = "Call Trace";
     private static final int NOTIFICATION_ID = 1001;
+
+    // ── Call Bomber Detection ────────────────────────────────────
+    private static final int BOMBER_CALL_THRESHOLD = 3;       // 3+ calls = bomber
+    private static final long BOMBER_WINDOW_MS = 5 * 60 * 1000; // within 5 minutes
 
     // ── State ────────────────────────────────────────────────────
     private TelephonyManager telephonyManager;
@@ -69,9 +80,19 @@ public class CallDefenderService extends Service {
 
     private volatile boolean isScamDetected = false;
     private volatile boolean alertTriggered = false;
+    private volatile boolean livePeakAlertTriggered = false;
     private volatile float currentScamScore = 0f;
     private String currentIncomingNumber = null;
+    private String currentThreatType = "none";
     private long callStartTime = 0;
+    private int lastCallState = TelephonyManager.CALL_STATE_IDLE;
+    private boolean isContactNumber = false; // true = caller is in phonebook, skip scam analysis
+
+    // Full transcript accumulated during the call
+    private final StringBuilder callTranscript = new StringBuilder();
+
+    // Call bomber tracking: number → list of timestamps
+    private final Map<String, LinkedList<Long>> callBomberTracker = new HashMap<>();
 
     // ═══════════════════════════════════════════════════════════════
     // Android 12+ TelephonyCallback
@@ -94,7 +115,7 @@ public class CallDefenderService extends Service {
     public void onCreate() {
         super.onCreate();
         Log.i(TAG, "╔══════════════════════════════════════╗");
-        Log.i(TAG, "║  SCAM SHIELD AI — INITIALIZED        ║");
+        Log.i(TAG, "║  CALL TRACE — INITIALIZED           ║");
         Log.i(TAG, "╚══════════════════════════════════════╝");
 
         mainHandler = new Handler(Looper.getMainLooper());
@@ -102,7 +123,7 @@ public class CallDefenderService extends Service {
 
         // Initialize AI components
         speechEngine = new SpeechToTextEngine(this);
-        scamAnalyzer = new ScamAnalyzerAI();
+        scamAnalyzer = new ScamAnalyzerAI(this);
 
         // Wire speech-to-text → AI analyzer
         setupSpeechToAIPipeline();
@@ -113,7 +134,7 @@ public class CallDefenderService extends Service {
         createNotificationChannel();
 
         try {
-            startForeground(NOTIFICATION_ID, buildNotification("Monitoring — Shield Active"));
+            startForeground(NOTIFICATION_ID, buildNotification("Monitoring — Call Trace active"));
         } catch (SecurityException e) {
             Log.e(TAG, "Could not start foreground service", e);
         }
@@ -126,6 +147,12 @@ public class CallDefenderService extends Service {
         if (intent != null && intent.hasExtra("incoming_number")) {
             currentIncomingNumber = intent.getStringExtra("incoming_number");
             Log.d(TAG, "Incoming number: " + maskNumber(currentIncomingNumber));
+        }
+        if (intent != null && intent.hasExtra("phone_state")) {
+            int mappedState = mapPhoneState(intent.getStringExtra("phone_state"));
+            if (mappedState != -1) {
+                handleCallStateChange(mappedState);
+            }
         }
         return START_STICKY;
     }
@@ -163,6 +190,10 @@ public class CallDefenderService extends Service {
 
             @Override
             public void onFinalResult(String finalText, String fullTranscript) {
+                // Accumulate transcript for saving
+                if (callTranscript.length() > 0) callTranscript.append(" ");
+                callTranscript.append(finalText);
+
                 // Broadcast final transcript to dashboard
                 broadcastTranscript(finalText, false);
 
@@ -185,6 +216,7 @@ public class CallDefenderService extends Service {
             @Override
             public void onAnalysisUpdate(ScamAnalyzerAI.AnalysisResult result) {
                 currentScamScore = result.confidence;
+                currentThreatType = result.threatType;
                 broadcastThreatUpdate(result);
             }
 
@@ -254,31 +286,70 @@ public class CallDefenderService extends Service {
     // ═══════════════════════════════════════════════════════════════
 
     private void handleCallStateChange(int state) {
+        if (state == lastCallState) {
+            return;
+        }
+        lastCallState = state;
+
         switch (state) {
 
             case TelephonyManager.CALL_STATE_RINGING:
                 Log.i(TAG, "📞 RINGING — " + maskNumber(currentIncomingNumber));
                 isScamDetected = false;
                 alertTriggered = false;
+                livePeakAlertTriggered = false;
                 currentScamScore = 0f;
+                currentThreatType = "none";
+                callTranscript.setLength(0);
                 scamAnalyzer.reset();
-                updateNotification("⚡ Incoming call — Preparing shield...");
+
+                // Check if caller is in contacts — if yes, skip all scam analysis
+                isContactNumber = (currentIncomingNumber != null)
+                        && isNumberInContacts(currentIncomingNumber);
+
+                if (isContactNumber) {
+                    Log.i(TAG, "✅ CONTACT — " + maskNumber(currentIncomingNumber) + " is in phonebook, skipping scam analysis");
+                    updateNotification("✅ Contact call — " + maskNumber(currentIncomingNumber));
+                } else {
+                    updateNotification("⚡ Incoming call — Preparing Call Trace...");
+                }
+
                 broadcastCallState("RINGING", currentIncomingNumber);
 
-                // Check community scam database
-                if (currentIncomingNumber != null) {
+                // Only run scam checks for UNKNOWN numbers
+                if (!isContactNumber && currentIncomingNumber != null) {
                     checkScamDatabase(currentIncomingNumber);
+                    // Check for call bomber
+                    if (isCallBomber(currentIncomingNumber)) {
+                        Log.w(TAG, "🚨 CALL BOMBER DETECTED: " + maskNumber(currentIncomingNumber));
+                        raiseNumberIntelligenceAlert(
+                                "call_bomber",
+                                0.95f,
+                                "🚨 CALL BOMBER — " + maskNumber(currentIncomingNumber));
+                    }
                 }
                 break;
 
             case TelephonyManager.CALL_STATE_OFFHOOK:
                 Log.i(TAG, "🎙️ OFF-HOOK — Starting real-time analysis");
                 callStartTime = System.currentTimeMillis();
-                updateNotification("🔴 LIVE — AI analyzing call audio...");
-                broadcastCallState("ACTIVE", currentIncomingNumber);
 
-                // Start speech-to-text (no recording, real-time only)
-                mainHandler.post(() -> speechEngine.start());
+                if (isContactNumber) {
+                    // Contact call — don't analyze, just monitor
+                    updateNotification("✅ In call with contact");
+                    broadcastCallState("ACTIVE", currentIncomingNumber);
+                    Log.i(TAG, "Skipping STT + AI for contact call");
+                } else {
+                    // Unknown number — full AI analysis
+                    if (isScamDetected) {
+                        updateNotification("🚨 LIVE WARNING — " + currentThreatType);
+                        triggerLivePeakAlertOnce();
+                    } else {
+                        updateNotification("🔴 LIVE — AI analyzing call audio...");
+                    }
+                    broadcastCallState("ACTIVE", currentIncomingNumber);
+                    mainHandler.post(() -> speechEngine.start());
+                }
                 break;
 
             case TelephonyManager.CALL_STATE_IDLE:
@@ -287,19 +358,24 @@ public class CallDefenderService extends Service {
                 // Stop speech engine
                 speechEngine.stop();
 
-                int callDuration = (int) ((System.currentTimeMillis() - callStartTime) / 1000);
+                int callDuration = callStartTime > 0
+                        ? (int) ((System.currentTimeMillis() - callStartTime) / 1000)
+                        : 0;
+                String transcript = callTranscript.toString().trim();
 
                 if (isScamDetected && currentIncomingNumber != null) {
                     Log.w(TAG, "🚫 SCAM — Blocking: " + maskNumber(currentIncomingNumber));
                     blockNumber(currentIncomingNumber);
                     updateNotification("🛡️ Scam blocked: " + maskNumber(currentIncomingNumber));
                     broadcastCallState("SCAM_BLOCKED", currentIncomingNumber);
-                    syncToCloud(currentIncomingNumber, callDuration, currentScamScore, true);
+                    saveCallToFirestore(currentIncomingNumber, callDuration, currentScamScore,
+                            true, true, transcript, currentThreatType);
                 } else if (currentIncomingNumber != null && callDuration > 0) {
                     updateNotification("✅ Call clean — Monitoring");
-                    syncToCloud(currentIncomingNumber, callDuration, currentScamScore, false);
+                    saveCallToFirestore(currentIncomingNumber, callDuration, currentScamScore,
+                            false, false, transcript, currentThreatType);
                 } else {
-                    updateNotification("✅ Monitoring — Shield Active");
+                    updateNotification("✅ Monitoring — Call Trace active");
                 }
 
                 broadcastCallState("IDLE", null);
@@ -307,11 +383,102 @@ public class CallDefenderService extends Service {
                 // Reset
                 isScamDetected = false;
                 alertTriggered = false;
+                livePeakAlertTriggered = false;
                 currentScamScore = 0f;
+                currentThreatType = "none";
                 currentIncomingNumber = null;
                 callStartTime = 0;
+                isContactNumber = false;
+                callTranscript.setLength(0);
                 break;
         }
+    }
+
+    private int mapPhoneState(String state) {
+        if (TelephonyManager.EXTRA_STATE_RINGING.equals(state)) {
+            return TelephonyManager.CALL_STATE_RINGING;
+        }
+        if (TelephonyManager.EXTRA_STATE_OFFHOOK.equals(state)) {
+            return TelephonyManager.CALL_STATE_OFFHOOK;
+        }
+        if (TelephonyManager.EXTRA_STATE_IDLE.equals(state)) {
+            return TelephonyManager.CALL_STATE_IDLE;
+        }
+        return -1;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // CONTACTS WHITELIST — Skip scam analysis for known contacts
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Check if a phone number exists in the user's contacts.
+     * If the number is a saved contact, we trust it and skip all
+     * scam analysis (no STT, no AI, no alerts, no blocking).
+     */
+    private boolean isNumberInContacts(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.trim().isEmpty()) return false;
+
+        try {
+            Uri lookupUri = Uri.withAppendedPath(
+                    ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
+                    Uri.encode(phoneNumber));
+
+            String[] projection = {ContactsContract.PhoneLookup.DISPLAY_NAME};
+
+            Cursor cursor = getContentResolver().query(lookupUri, projection,
+                    null, null, null);
+
+            if (cursor != null) {
+                boolean found = cursor.getCount() > 0;
+                if (found) {
+                    cursor.moveToFirst();
+                    String name = cursor.getString(
+                            cursor.getColumnIndexOrThrow(ContactsContract.PhoneLookup.DISPLAY_NAME));
+                    Log.i(TAG, "📒 Contact found: " + name + " — whitelisted");
+                }
+                cursor.close();
+                return found;
+            }
+        } catch (SecurityException e) {
+            Log.w(TAG, "Cannot read contacts — treating as unknown", e);
+        } catch (Exception e) {
+            Log.w(TAG, "Contact lookup error", e);
+        }
+        return false;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // CALL BOMBER DETECTION
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Track incoming calls per number. If 3+ calls from the same
+     * number within 5 minutes, it's a call bomber → auto-block.
+     */
+    private boolean isCallBomber(String phoneNumber) {
+        if (phoneNumber == null) return false;
+
+        long now = System.currentTimeMillis();
+        LinkedList<Long> timestamps = callBomberTracker.get(phoneNumber);
+        if (timestamps == null) {
+            timestamps = new LinkedList<>();
+            callBomberTracker.put(phoneNumber, timestamps);
+        }
+
+        timestamps.add(now);
+
+        // Remove timestamps outside the window
+        while (!timestamps.isEmpty() && (now - timestamps.getFirst()) > BOMBER_WINDOW_MS) {
+            timestamps.removeFirst();
+        }
+
+        boolean isBomber = timestamps.size() >= BOMBER_CALL_THRESHOLD;
+        if (isBomber) {
+            Log.w(TAG, "📞 Call bomber: " + timestamps.size() + " calls in 5 min from "
+                    + maskNumber(phoneNumber));
+        }
+        return isBomber;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -350,8 +517,47 @@ public class CallDefenderService extends Service {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // SUPABASE CLOUD SYNC
+    // FIRESTORE — Save Call Data + Transcript
     // ═══════════════════════════════════════════════════════════════
+
+    private void saveCallToFirestore(String phoneNumber, int durationSec, float scamScore,
+                                      boolean isScam, boolean blocked, String transcript,
+                                      String threatType) {
+        CallLog callLog = new CallLog(phoneNumber, durationSec, scamScore, isScam, 0f);
+        callLog.transcript = transcript;
+        callLog.threatType = threatType;
+        callLog.blocked = blocked;
+        callLog.timestamp = System.currentTimeMillis();
+
+        // Save to Firestore
+        FirestoreHelper.getInstance().saveCallLog(callLog, new FirestoreHelper.ResultCallback() {
+            @Override
+            public void onSuccess() {
+                Log.i(TAG, "☁️ Call log + transcript saved to Firestore");
+            }
+
+            @Override
+            public void onError(String error) {
+                Log.w(TAG, "Firestore save failed: " + error);
+            }
+        });
+
+        // Also save blocked number separately
+        if (blocked) {
+            FirestoreHelper.getInstance().saveBlockedNumber(phoneNumber, "auto_detected", scamScore,
+                    new FirestoreHelper.ResultCallback() {
+                        @Override
+                        public void onSuccess() {
+                            Log.i(TAG, "☁️ Blocked number saved to Firestore");
+                        }
+
+                        @Override
+                        public void onError(String error) {
+                            Log.w(TAG, "Blocked number save failed: " + error);
+                        }
+                    });
+        }
+    }
 
     private void checkScamDatabase(String phoneNumber) {
         FirebaseClient.getInstance().checkScamDatabase(phoneNumber,
@@ -360,8 +566,10 @@ public class CallDefenderService extends Service {
                     public void onSuccess(com.scamshield.defender.model.ScamNumber scam) {
                         if (scam != null && scam.total_reports >= 2) {
                             Log.w(TAG, "⚠️ KNOWN SCAM — " + scam.total_reports + " reports!");
-                            updateNotification("⚠️ WARNING: Known scam (" + scam.total_reports + " reports)");
-                            triggerScamAlert();
+                            raiseNumberIntelligenceAlert(
+                                    "known_scam_number",
+                                    getDatabaseThreatScore(scam),
+                                    "⚠️ WARNING: Known scam (" + scam.total_reports + " reports)");
                         }
                     }
 
@@ -372,21 +580,25 @@ public class CallDefenderService extends Service {
                 });
     }
 
-    private void syncToCloud(String phoneNumber, int durationSec, float scamScore, boolean isScam) {
-        FirebaseClient client = FirebaseClient.getInstance();
+    private float getDatabaseThreatScore(com.scamshield.defender.model.ScamNumber scam) {
+        if (scam.is_verified_scam) return 1.0f;
+        float reportScore = Math.min(0.95f, 0.55f + (scam.total_reports * 0.05f));
+        return Math.max(reportScore, scam.avg_scam_score);
+    }
 
-        CallLog callLog = new CallLog(phoneNumber, durationSec, scamScore, isScam, 0f);
-        client.insertCallLog(callLog, new FirebaseClient.DataCallback<Void>() {
-            @Override public void onSuccess(Void data) { Log.i(TAG, "☁️ Call log synced"); }
-            @Override public void onError(String error) { Log.w(TAG, "Sync failed: " + error); }
-        });
+    private void raiseNumberIntelligenceAlert(String threatType, float scamScore, String notificationText) {
+        isScamDetected = true;
+        currentThreatType = threatType;
+        currentScamScore = Math.max(currentScamScore, scamScore);
+        updateNotification(notificationText);
 
-        if (isScam) {
-            BlockedNumber blocked = new BlockedNumber(phoneNumber, "auto_detected", scamScore);
-            client.insertBlockedNumber(blocked, new FirebaseClient.DataCallback<Void>() {
-                @Override public void onSuccess(Void d) { Log.i(TAG, "☁️ Block synced"); }
-                @Override public void onError(String e) { Log.w(TAG, "Block sync failed: " + e); }
-            });
+        if (!alertTriggered) {
+            alertTriggered = true;
+            triggerScamAlert();
+        }
+
+        if (lastCallState == TelephonyManager.CALL_STATE_OFFHOOK) {
+            triggerLivePeakAlertOnce();
         }
     }
 
@@ -394,12 +606,19 @@ public class CallDefenderService extends Service {
     // SCAM ALERT — Double Vibration
     // ═══════════════════════════════════════════════════════════════
 
+    private void triggerLivePeakAlertOnce() {
+        if (livePeakAlertTriggered) return;
+        livePeakAlertTriggered = true;
+        triggerScamAlert();
+    }
+
     private void triggerScamAlert() {
-        Log.w(TAG, "🔔 SCAM ALERT — Double vibration!");
+        Log.w(TAG, "🔔 SCAM ALERT — peak vibration!");
 
         Vibrator vibrator;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            if (vm == null) return;
             vibrator = vm.getDefaultVibrator();
         } else {
             vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
@@ -407,9 +626,9 @@ public class CallDefenderService extends Service {
 
         if (vibrator == null || !vibrator.hasVibrator()) return;
 
-        long[] pattern = {0, 300, 200, 300};
+        long[] pattern = {0, 450, 120, 450, 120, 700};
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            int[] amplitudes = {0, 255, 0, 255};
+            int[] amplitudes = {0, 255, 0, 255, 0, 255};
             vibrator.vibrate(VibrationEffect.createWaveform(pattern, amplitudes, -1));
         } else {
             vibrator.vibrate(pattern, -1);
@@ -453,7 +672,7 @@ public class CallDefenderService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("Scam Shield call monitoring");
+            channel.setDescription("Call Trace call monitoring");
             channel.setShowBadge(false);
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) manager.createNotificationChannel(channel);
@@ -466,7 +685,7 @@ public class CallDefenderService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Scam Shield AI")
+                .setContentTitle("Call Trace")
                 .setContentText(text)
                 .setSmallIcon(R.drawable.ic_shield)
                 .setContentIntent(pi)

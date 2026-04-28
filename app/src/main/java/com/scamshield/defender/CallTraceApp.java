@@ -6,9 +6,9 @@ import android.app.NotificationManager;
 import android.os.Build;
 
 /**
- * Application class for Scam Shield — global initialization.
+ * Application class for Call Trace — global initialization.
  */
-public class ScamShieldApp extends Application {
+public class CallTraceApp extends Application {
 
     public static final String CHANNEL_ID_ALERTS = "scam_shield_alerts";
 

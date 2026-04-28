@@ -2,40 +2,51 @@ package com.scamshield.defender.model;
 
 import com.google.gson.annotations.SerializedName;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
- * Model for the call_logs table in Supabase.
- * Records every analyzed call with its scam verdict.
+ * Model for call log entries stored in Firestore.
+ * Records every analyzed call with its scam verdict and transcript.
  */
 public class CallLog {
 
-    /** Auto-generated UUID (set by Supabase) */
     public String id;
 
-    /** User ID from Supabase Auth (set by RLS policy) */
     @SerializedName("user_id")
     public String userId;
 
-    /** The caller's phone number */
     @SerializedName("phone_number")
     public String phoneNumber;
 
-    /** Call duration in seconds */
     @SerializedName("call_duration_seconds")
     public int callDurationSeconds;
 
-    /** AI-computed scam probability (0.0 to 1.0) */
     @SerializedName("scam_score")
     public float scamScore;
 
-    /** Final verdict: was this call a scam? */
     @SerializedName("is_scam")
     public boolean isScam;
 
-    /** Deepfake detection probability */
     @SerializedName("deepfake_score")
     public float deepfakeScore;
 
-    /** Timestamp of analysis (auto-set by Supabase default) */
+    /** Full transcript of the call */
+    @SerializedName("transcript")
+    public String transcript;
+
+    /** Scam threat category (banking, kyc, urgency, authority, etc.) */
+    @SerializedName("threat_type")
+    public String threatType;
+
+    /** Unix timestamp in millis */
+    @SerializedName("timestamp")
+    public long timestamp;
+
+    /** Whether the number was auto-blocked after the call */
+    @SerializedName("blocked")
+    public boolean blocked;
+
     @SerializedName("analyzed_at")
     public String analyzedAt;
 
@@ -48,6 +59,67 @@ public class CallLog {
         this.scamScore = scamScore;
         this.isScam = isScam;
         this.deepfakeScore = deepfakeScore;
+        this.timestamp = System.currentTimeMillis();
+    }
+
+    /** Convert to Firestore-compatible Map */
+    public Map<String, Object> toMap() {
+        Map<String, Object> map = new HashMap<>();
+        map.put("phoneNumber", phoneNumber != null ? phoneNumber : "");
+        map.put("callDurationSeconds", callDurationSeconds);
+        map.put("scamScore", scamScore);
+        map.put("isScam", isScam);
+        map.put("deepfakeScore", deepfakeScore);
+        map.put("transcript", transcript != null ? transcript : "");
+        map.put("threatType", threatType != null ? threatType : "none");
+        map.put("timestamp", timestamp > 0 ? timestamp : System.currentTimeMillis());
+        map.put("blocked", blocked);
+        return map;
+    }
+
+    /** Create from Firestore document data */
+    public static CallLog fromMap(String docId, Map<String, Object> data) {
+        CallLog log = new CallLog();
+        log.id = docId;
+        log.phoneNumber = getStr(data, "phoneNumber");
+        log.callDurationSeconds = getInt(data, "callDurationSeconds");
+        log.scamScore = getFloat(data, "scamScore");
+        log.isScam = getBool(data, "isScam");
+        log.deepfakeScore = getFloat(data, "deepfakeScore");
+        log.transcript = getStr(data, "transcript");
+        log.threatType = getStr(data, "threatType");
+        log.timestamp = getLong(data, "timestamp");
+        log.blocked = getBool(data, "blocked");
+        return log;
+    }
+
+    private static String getStr(Map<String, Object> m, String k) {
+        Object v = m.get(k);
+        return v != null ? v.toString() : "";
+    }
+
+    private static int getInt(Map<String, Object> m, String k) {
+        Object v = m.get(k);
+        if (v instanceof Number) return ((Number) v).intValue();
+        return 0;
+    }
+
+    private static float getFloat(Map<String, Object> m, String k) {
+        Object v = m.get(k);
+        if (v instanceof Number) return ((Number) v).floatValue();
+        return 0f;
+    }
+
+    private static long getLong(Map<String, Object> m, String k) {
+        Object v = m.get(k);
+        if (v instanceof Number) return ((Number) v).longValue();
+        return 0L;
+    }
+
+    private static boolean getBool(Map<String, Object> m, String k) {
+        Object v = m.get(k);
+        if (v instanceof Boolean) return (Boolean) v;
+        return false;
     }
 
     @Override

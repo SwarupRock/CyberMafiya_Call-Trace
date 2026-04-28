@@ -1,373 +1,507 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/obsidian_dark"
-    android:fillViewport="true">
+    android:background="@color/obsidian_black">
 
-    <LinearLayout
+    <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="20dp">
+        android:layout_height="match_parent"
+        android:clipToPadding="false"
+        android:fillViewport="true"
+        android:paddingBottom="92dp">
 
-        <!-- ══════════ HEADER ══════════ -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginBottom="16dp">
-
-            <ImageView
-                android:layout_width="32dp"
-                android:layout_height="32dp"
-                android:src="@drawable/ic_shield"
-                android:contentDescription="Shield" />
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="12dp"
-                android:text="SCAM SHIELD AI"
-                android:textColor="@color/cyber_cyan"
-                android:textSize="20sp"
-                android:textStyle="bold"
-                android:fontFamily="monospace"
-                android:letterSpacing="0.1" />
-
-            <!-- Status Indicator -->
-            <View
-                android:id="@+id/status_dot"
-                android:layout_width="10dp"
-                android:layout_height="10dp"
-                android:background="@drawable/status_dot"
-                android:backgroundTint="@color/text_muted" />
-
-            <TextView
-                android:id="@+id/tv_shield_status"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="INACTIVE"
-                android:textColor="@color/text_muted"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <ImageView
-                android:id="@+id/iv_user_profile"
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:layout_marginStart="16dp"
-                android:src="@drawable/ic_user"
-                android:contentDescription="User Profile"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:clickable="true"
-                android:focusable="true"
-                android:tint="@color/text_muted" />
-        </LinearLayout>
-
-        <!-- ══════════ CALL STATUS CARD ══════════ -->
-        <LinearLayout
-            android:id="@+id/card_call_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/card_bg"
             android:orientation="vertical"
-            android:padding="20dp"
-            android:layout_marginBottom="12dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="CALL STATUS"
-                android:textColor="@color/text_muted"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:letterSpacing="0.2" />
-
-            <TextView
-                android:id="@+id/tv_call_state"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="MONITORING"
-                android:textColor="@color/cyber_cyan"
-                android:textSize="22sp"
-                android:textStyle="bold"
-                android:fontFamily="monospace" />
-
-            <TextView
-                android:id="@+id/tv_caller_number"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Waiting for incoming call..."
-                android:textColor="@color/text_muted"
-                android:textSize="14sp" />
-        </LinearLayout>
-
-        <!-- ══════════ LIVE TRANSCRIPT ══════════ -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/card_bg"
-            android:orientation="vertical"
-            android:padding="20dp"
-            android:layout_marginBottom="12dp">
+            android:paddingStart="16dp"
+            android:paddingTop="16dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="24dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:background="@drawable/command_panel_bg"
+                android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:gravity="center_vertical">
+                android:padding="16dp">
 
-                <View
-                    android:id="@+id/live_pulse"
-                    android:layout_width="8dp"
-                    android:layout_height="8dp"
-                    android:background="@drawable/status_dot"
-                    android:backgroundTint="@color/neon_crimson"
+                <FrameLayout
+                    android:layout_width="58dp"
+                    android:layout_height="58dp"
+                    android:background="@drawable/shield_core_bg"
+                    android:padding="13dp">
+
+                    <ImageView
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:contentDescription="Call Trace"
+                        android:src="@drawable/ic_shield" />
+                </FrameLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="14dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:letterSpacing="0.18"
+                        android:text="CYBERSECURITY COMMAND CENTER"
+                        android:textColor="@color/text_muted"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:fontFamily="monospace"
+                        android:letterSpacing="0.08"
+                        android:text="CALL TRACE"
+                        android:textColor="@android:color/white"
+                        android:textSize="23sp"
+                        android:textStyle="bold" />
+
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <View
+                            android:id="@+id/status_dot"
+                            android:layout_width="9dp"
+                            android:layout_height="9dp"
+                            android:background="@drawable/status_dot"
+                            android:backgroundTint="@color/text_muted" />
+
+                        <TextView
+                            android:id="@+id/tv_shield_status"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="7dp"
+                            android:fontFamily="monospace"
+                            android:letterSpacing="0.1"
+                            android:text="INACTIVE"
+                            android:textColor="@color/text_muted"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <ImageView
+                    android:id="@+id/iv_user_profile"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/profile_button_bg"
+                    android:clickable="true"
+                    android:contentDescription="User Profile"
+                    android:focusable="true"
+                    android:padding="10dp"
+                    android:src="@drawable/ic_user"
+                    android:tint="@color/cyber_cyan" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="78dp"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/metric_panel_bg"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="10dp">
+
+                    <TextView
+                        android:id="@+id/tv_calls_analyzed"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="0"
+                        android:textColor="@color/cyber_cyan"
+                        android:textSize="25sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="SCREENED"
+                        android:textColor="@color/text_muted"
+                        android:textSize="10sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="78dp"
+                    android:layout_marginStart="3dp"
+                    android:layout_marginEnd="3dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/metric_panel_bg"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="10dp">
+
+                    <TextView
+                        android:id="@+id/tv_scams_blocked"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="0"
+                        android:textColor="@color/neon_crimson"
+                        android:textSize="25sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="BLOCKED"
+                        android:textColor="@color/text_muted"
+                        android:textSize="10sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="78dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/metric_panel_bg"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="10dp">
+
+                    <TextView
+                        android:id="@+id/tv_community_reports"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="0"
+                        android:textColor="@color/neon_amber"
+                        android:textSize="25sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="REPORTS"
+                        android:textColor="@color/text_muted"
+                        android:textSize="10sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/card_call_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/command_panel_bg"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.18"
+                    android:text="CALL INTERCEPT STATUS"
+                    android:textColor="@color/text_muted"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tv_call_state"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:fontFamily="monospace"
+                    android:text="MONITORING"
+                    android:textColor="@color/cyber_cyan"
+                    android:textSize="24sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tv_caller_number"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="3dp"
+                    android:fontFamily="monospace"
+                    android:text="Waiting for incoming call..."
+                    android:textColor="@color/text_dim"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/command_panel_bg"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:id="@+id/live_pulse"
+                        android:layout_width="9dp"
+                        android:layout_height="9dp"
+                        android:background="@drawable/status_dot"
+                        android:backgroundTint="@color/neon_crimson"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:layout_weight="1"
+                        android:fontFamily="monospace"
+                        android:letterSpacing="0.18"
+                        android:text="AUDIO INTELLIGENCE ANALYZER"
+                        android:textColor="@color/text_muted"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="CLOUD AI"
+                        android:textColor="@color/cyber_cyan"
+                        android:textSize="10sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btn_upload_audio"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/menu_button_cyan"
+                    android:fontFamily="monospace"
+                    android:text="⬆ UPLOAD AUDIO FILE FOR ANALYSIS"
+                    android:textColor="@color/cyber_cyan"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textAllCaps="false" />
+
+                <ScrollView
+                    android:id="@+id/scroll_transcript"
+                    android:layout_width="match_parent"
+                    android:layout_height="200dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/terminal_bg"
+                    android:padding="12dp">
+
+                    <TextView
+                        android:id="@+id/tv_transcript"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:lineSpacingExtra="5dp"
+                        android:text="Upload an audio file or make a call to start analysis..."
+                        android:textColor="@color/cyber_cyan"
+                        android:textSize="13sp" />
+                </ScrollView>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/command_panel_bg"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.18"
+                    android:text="AI THREAT ANALYSIS"
+                    android:textColor="@color/text_muted"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <ProgressBar
+                    android:id="@+id/progress_threat"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="18dp"
+                    android:layout_marginTop="12dp"
+                    android:max="100"
+                    android:progress="0"
+                    android:progressBackgroundTint="@color/obsidian_400"
+                    android:progressTint="@color/cyber_green" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tv_threat_percent"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:fontFamily="monospace"
+                        android:text="0%"
+                        android:textColor="@color/cyber_green"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tv_threat_level"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:letterSpacing="0.1"
+                        android:text="SAFE"
+                        android:textColor="@color/cyber_green"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tv_threat_type"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:fontFamily="monospace"
+                    android:text="No threats detected"
+                    android:textColor="@color/text_muted"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tv_keywords"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:fontFamily="monospace"
+                    android:textColor="@color/neon_crimson"
+                    android:textSize="12sp"
                     android:visibility="gone" />
 
                 <TextView
+                    android:id="@+id/tv_ai_source"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="6dp"
-                    android:text="LIVE TRANSCRIPT"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/badge_bg"
+                    android:fontFamily="monospace"
+                    android:paddingStart="8dp"
+                    android:paddingTop="3dp"
+                    android:paddingEnd="8dp"
+                    android:paddingBottom="3dp"
+                    android:text="LOCAL AI"
                     android:textColor="@color/text_muted"
-                    android:textSize="11sp"
-                    android:textStyle="bold"
-                    android:letterSpacing="0.2" />
+                    android:textSize="10sp" />
             </LinearLayout>
 
-            <ScrollView
+
+
+            <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="120dp"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/terminal_bg"
-                android:padding="12dp">
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/command_panel_bg"
+                android:orientation="vertical"
+                android:padding="16dp">
 
                 <TextView
-                    android:id="@+id/tv_transcript"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.18"
+                    android:text="RECENT INTERCEPTS LOG"
+                    android:textColor="@color/text_muted"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:id="@+id/layout_recent_calls"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Transcript will appear here during an active call..."
-                    android:textColor="@color/terminal_green"
-                    android:textSize="13sp"
-                    android:fontFamily="monospace"
-                    android:lineSpacingExtra="4dp" />
-            </ScrollView>
-        </LinearLayout>
-
-        <!-- ══════════ AI THREAT ANALYSIS ══════════ -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/card_bg"
-            android:orientation="vertical"
-            android:padding="20dp"
-            android:layout_marginBottom="12dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="AI THREAT ANALYSIS"
-                android:textColor="@color/text_muted"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:letterSpacing="0.2" />
-
-            <!-- Threat Score Bar -->
-            <ProgressBar
-                android:id="@+id/progress_threat"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="24dp"
-                android:layout_marginTop="12dp"
-                android:max="100"
-                android:progress="0"
-                android:progressTint="@color/cyber_green"
-                android:progressBackgroundTint="#1a1a2e" />
+                    android:layout_marginTop="8dp"
+                    android:orientation="vertical" />
+            </LinearLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:orientation="horizontal">
+                android:layout_marginTop="12dp"
+                android:background="@drawable/command_panel_bg"
+                android:orientation="vertical"
+                android:padding="16dp">
 
                 <TextView
-                    android:id="@+id/tv_threat_percent"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="0%"
-                    android:textColor="@color/cyber_green"
-                    android:textSize="16sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tv_threat_level"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="SAFE"
-                    android:textColor="@color/cyber_green"
-                    android:textSize="14sp"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.18"
+                    android:text="QUARANTINE MESSAGES"
+                    android:textColor="@color/text_muted"
+                    android:textSize="10sp"
                     android:textStyle="bold" />
+
+                <LinearLayout
+                    android:id="@+id/layout_quarantine_messages"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="vertical" />
             </LinearLayout>
 
-            <!-- Threat Type -->
             <TextView
-                android:id="@+id/tv_threat_type"
+                android:id="@+id/tv_user_phone"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="No threats detected"
+                android:layout_gravity="center"
+                android:layout_marginTop="14dp"
+                android:fontFamily="monospace"
                 android:textColor="@color/text_muted"
                 android:textSize="12sp" />
-
-            <!-- Keywords Found -->
-            <TextView
-                android:id="@+id/tv_keywords"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:textColor="@color/neon_crimson"
-                android:textSize="12sp"
-                android:visibility="gone" />
-
-            <!-- AI Source Badge -->
-            <TextView
-                android:id="@+id/tv_ai_source"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="⚡ LOCAL AI"
-                android:textColor="@color/text_muted"
-                android:textSize="10sp"
-                android:background="@drawable/badge_bg"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:paddingTop="2dp"
-                android:paddingBottom="2dp" />
         </LinearLayout>
+    </ScrollView>
 
-        <!-- ══════════ STATS ROW ══════════ -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="12dp">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="84dp"
+        android:layout_gravity="bottom"
+        android:background="@drawable/bottom_bar_bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp">
 
-            <!-- Calls Analyzed -->
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:background="@drawable/card_bg"
-                android:orientation="vertical"
-                android:padding="16dp"
-                android:gravity="center"
-                android:layout_marginEnd="6dp">
-
-                <TextView
-                    android:id="@+id/tv_calls_analyzed"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="0"
-                    android:textColor="@color/cyber_cyan"
-                    android:textSize="28sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Analyzed"
-                    android:textColor="@color/text_muted"
-                    android:textSize="11sp" />
-            </LinearLayout>
-
-            <!-- Scams Blocked -->
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:background="@drawable/card_bg"
-                android:orientation="vertical"
-                android:padding="16dp"
-                android:gravity="center"
-                android:layout_marginStart="3dp"
-                android:layout_marginEnd="3dp">
-
-                <TextView
-                    android:id="@+id/tv_scams_blocked"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="0"
-                    android:textColor="@color/neon_crimson"
-                    android:textSize="28sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Blocked"
-                    android:textColor="@color/text_muted"
-                    android:textSize="11sp" />
-            </LinearLayout>
-
-            <!-- Community Reports -->
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:background="@drawable/card_bg"
-                android:orientation="vertical"
-                android:padding="16dp"
-                android:gravity="center"
-                android:layout_marginStart="6dp">
-
-                <TextView
-                    android:id="@+id/tv_community_reports"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="0"
-                    android:textColor="@color/cyber_green"
-                    android:textSize="28sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Community"
-                    android:textColor="@color/text_muted"
-                    android:textSize="11sp" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <!-- ══════════ SHIELD TOGGLE ══════════ -->
         <Button
             android:id="@+id/btn_toggle_shield"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginTop="4dp"
-            android:text="ACTIVATE SHIELD"
-            android:textColor="@color/obsidian_dark"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:backgroundTint="@color/cyber_cyan" />
-
-        <!-- User Info -->
-        <TextView
-            android:id="@+id/tv_user_phone"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:layout_marginBottom="24dp"
-            android:layout_gravity="center"
-            android:textColor="@color/text_muted"
-            android:textSize="12sp" />
-
+            android:layout_height="52dp"
+            android:backgroundTint="@color/cyber_cyan"
+            android:fontFamily="monospace"
+            android:text="START TRACE"
+            android:textColor="@color/obsidian_black"
+            android:textSize="12sp"
+            android:textStyle="bold" />
     </LinearLayout>
-</ScrollView>
+</FrameLayout>

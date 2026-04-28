@@ -1,0 +1,37 @@
+type UserProfile @table {
+  id: String! @default(expr: "auth.uid")
+  phoneNumber: String
+  email: String
+  country: String
+  createdAt: Date! @default(expr: "request.time")
+}
+
+type CallLog @table {
+  id: UUID! @default(expr: "uuidV4()")
+  userId: String!
+  phoneNumber: String!
+  callDurationSeconds: Int!
+  scamScore: Float!
+  isScam: Boolean!
+  deepfakeScore: Float!
+  analyzedAt: Date! @default(expr: "request.time")
+}
+
+type BlockedNumber @table {
+  id: UUID! @default(expr: "uuidV4()")
+  phoneNumber: String!
+  blockedBy: String!
+  reason: String!
+  scamScore: Float!
+  reportCount: Int!
+  createdAt: Date! @default(expr: "request.time")
+}
+
+type ScamNumber @table {
+  id: String! # The phone number
+  totalReports: Int!
+  avgScamScore: Float!
+  firstReported: Date! @default(expr: "request.time")
+  lastReported: Date! @default(expr: "request.time")
+  isVerifiedScam: Boolean!
+}

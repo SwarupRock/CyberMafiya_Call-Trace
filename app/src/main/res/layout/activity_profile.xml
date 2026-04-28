@@ -17,7 +17,7 @@
             android:layout_height="80dp"
             android:src="@drawable/ic_shield"
             android:layout_marginTop="32dp"
-            android:contentDescription="Scam Shield Logo" />
+            android:contentDescription="Call Trace logo" />
 
         <TextView
             android:layout_width="wrap_content"

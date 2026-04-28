@@ -5,11 +5,16 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.TextUtils;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -25,6 +30,7 @@ import com.google.android.gms.tasks.Task;
 import com.google.firebase.FirebaseException;
 import com.google.firebase.auth.AuthCredential;
 import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.auth.GoogleAuthProvider;
 import com.google.firebase.auth.PhoneAuthCredential;
@@ -42,17 +48,22 @@ public class LoginActivity extends AppCompatActivity {
     private static final String PREFS_NAME = "scam_shield_prefs";
     private static final int RC_SIGN_IN = 9001;
 
-    private EditText etPhone, etOtp;
-    private Button btnSendOtp, btnVerifyOtp, btnGoogleSignIn;
-    private LinearLayout layoutPhoneInput, layoutOtpInput;
-    private TextView tvOtpSentTo, tvResendOtp, tvStatus;
-    private Button btnDemoMode;
+    private EditText etEmail, etPassword;
+    private Button btnEmailSignIn, btnEmailSignUp, btnGoogleSignIn, btnPhoneMode;
+    private LinearLayout layoutEmailInput;
+    private TextView tvStatus, tvForgotPassword, tvAuthHint, tvEmailMode, tvOtpEmailMode, tvPhoneRecovery;
 
-    private String userPhone = "";
+    private EditText etPhone, etOtp;
+    private Button btnSendOtp, btnVerifyOtp;
+    private LinearLayout layoutPhoneInput, layoutOtpInput;
+    private TextView tvOtpSentTo, tvResendOtp;
+    private Spinner spinnerCountryCode;
+
     private String verificationId;
     private PhoneAuthProvider.ForceResendingToken resendToken;
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private String userPhone;
 
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private FirebaseAuth mAuth;
     private GoogleSignInClient mGoogleSignInClient;
 
@@ -71,6 +82,7 @@ public class LoginActivity extends AppCompatActivity {
         bindViews();
         setupListeners();
         setupGoogleSignIn();
+        showEmailMode();
     }
 
     private boolean isLoggedIn() {
@@ -78,25 +90,49 @@ public class LoginActivity extends AppCompatActivity {
     }
 
     private void bindViews() {
+        etEmail = findViewById(R.id.et_email);
+        etPassword = findViewById(R.id.et_password);
+        btnEmailSignIn = findViewById(R.id.btn_email_signin);
+        btnEmailSignUp = findViewById(R.id.btn_email_signup);
+        btnGoogleSignIn = findViewById(R.id.btn_google_signin);
+        btnPhoneMode = findViewById(R.id.btn_phone_mode);
+        layoutEmailInput = findViewById(R.id.layout_email_input);
+        tvStatus = findViewById(R.id.tv_status);
+        tvForgotPassword = findViewById(R.id.tv_forgot_password);
+        tvAuthHint = findViewById(R.id.tv_auth_hint);
+
         etPhone = findViewById(R.id.et_phone);
         etOtp = findViewById(R.id.et_otp);
         btnSendOtp = findViewById(R.id.btn_send_otp);
         btnVerifyOtp = findViewById(R.id.btn_verify_otp);
-        btnGoogleSignIn = findViewById(R.id.btn_google_signin);
         layoutPhoneInput = findViewById(R.id.layout_phone_input);
         layoutOtpInput = findViewById(R.id.layout_otp_input);
         tvOtpSentTo = findViewById(R.id.tv_otp_sent_to);
         tvResendOtp = findViewById(R.id.tv_resend_otp);
-        tvStatus = findViewById(R.id.tv_status);
-        btnDemoMode = findViewById(R.id.btn_demo_mode);
+        tvEmailMode = findViewById(R.id.tv_email_mode);
+        tvOtpEmailMode = findViewById(R.id.tv_otp_email_mode);
+        tvPhoneRecovery = findViewById(R.id.tv_phone_recovery);
+        spinnerCountryCode = findViewById(R.id.spinner_country_code);
     }
 
     private void setupListeners() {
+        btnEmailSignIn.setOnClickListener(v -> signInWithEmailPassword());
+        btnEmailSignUp.setOnClickListener(v -> createAccountWithEmailPassword());
+        btnGoogleSignIn.setOnClickListener(v -> signInWithGoogle());
+        btnPhoneMode.setOnClickListener(v -> showPhoneMode());
+        tvForgotPassword.setOnClickListener(v -> sendPasswordReset());
+        tvEmailMode.setOnClickListener(v -> showEmailMode());
+        tvOtpEmailMode.setOnClickListener(v -> showEmailMode());
+        tvPhoneRecovery.setOnClickListener(v -> {
+            showEmailMode();
+            showStatus("For phone login, resend the OTP. For an email account, enter your email and tap forgot password.", false);
+        });
+
         btnSendOtp.setOnClickListener(v -> sendOtp());
         btnVerifyOtp.setOnClickListener(v -> verifyOtp());
         tvResendOtp.setOnClickListener(v -> sendOtp());
-        btnDemoMode.setOnClickListener(v -> enterDemoMode());
-        btnGoogleSignIn.setOnClickListener(v -> signInWithGoogle());
+        
+        setupCountryCodeSpinner();
     }
 
     private void setupGoogleSignIn() {
@@ -107,8 +143,24 @@ public class LoginActivity extends AppCompatActivity {
         mGoogleSignInClient = GoogleSignIn.getClient(this, gso);
     }
 
+    private void showEmailMode() {
+        layoutEmailInput.setVisibility(View.VISIBLE);
+        layoutPhoneInput.setVisibility(View.GONE);
+        layoutOtpInput.setVisibility(View.GONE);
+        tvAuthHint.setText("Login to continue to your account");
+        tvStatus.setVisibility(View.GONE);
+    }
+
+    private void showPhoneMode() {
+        layoutEmailInput.setVisibility(View.GONE);
+        layoutPhoneInput.setVisibility(View.VISIBLE);
+        layoutOtpInput.setVisibility(View.GONE);
+        tvAuthHint.setText("Continue with your phone number");
+        tvStatus.setVisibility(View.GONE);
+    }
+
     private void signInWithGoogle() {
-        setLoading(true, "Signing in with Google...");
+        setLoading(true, "Opening Google sign-in...");
         Intent signInIntent = mGoogleSignInClient.getSignInIntent();
         startActivityForResult(signInIntent, RC_SIGN_IN);
     }
@@ -116,16 +168,24 @@ public class LoginActivity extends AppCompatActivity {
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == RC_SIGN_IN) {
-            Task<GoogleSignInAccount> task = GoogleSignIn.getSignedInAccountFromIntent(data);
-            try {
-                GoogleSignInAccount account = task.getResult(ApiException.class);
-                firebaseAuthWithGoogle(account.getIdToken());
-            } catch (ApiException e) {
-                Log.w(TAG, "Google sign in failed", e);
+        if (requestCode != RC_SIGN_IN) {
+            return;
+        }
+
+        Task<GoogleSignInAccount> task = GoogleSignIn.getSignedInAccountFromIntent(data);
+        try {
+            GoogleSignInAccount account = task.getResult(ApiException.class);
+            String idToken = account.getIdToken();
+            if (idToken == null || idToken.trim().isEmpty()) {
                 setLoading(false, null);
-                showStatus("Google sign in failed", true);
+                showStatus("Google did not return a Firebase token. Check the web client ID in Firebase.", true);
+                return;
             }
+            firebaseAuthWithGoogle(idToken);
+        } catch (ApiException e) {
+            Log.w(TAG, "Google sign in failed", e);
+            setLoading(false, null);
+            showStatus("Google sign in failed. Use forgot password for email accounts, or recover your Google account in Google.", true);
         }
     }
 
@@ -136,10 +196,114 @@ public class LoginActivity extends AppCompatActivity {
                     setLoading(false, null);
                     if (task.isSuccessful()) {
                         FirebaseUser user = mAuth.getCurrentUser();
-                        saveSession(user.getEmail());
-                        checkProfileAndNavigate();
+                        onAuthSuccess(user != null ? user.getEmail() : "google");
                     } else {
-                        showStatus("Authentication Failed", true);
+                        showStatus(mapAuthError(task.getException(), "Google authentication failed"), true);
+                    }
+                });
+    }
+
+    private void setupCountryCodeSpinner() {
+        String[] countryCodes = new String[]{"+91", "+1", "+44", "+61", "+81", "+86", "+49", "+33"};
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, countryCodes) {
+            @NonNull
+            @Override
+            public View getView(int position, View convertView, @NonNull ViewGroup parent) {
+                TextView view = (TextView) super.getView(position, convertView, parent);
+                view.setTextColor(getColor(R.color.text_primary));
+                view.setTextSize(15);
+                view.setGravity(Gravity.CENTER);
+                view.setSingleLine(true);
+                return view;
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, @NonNull ViewGroup parent) {
+                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
+                view.setTextColor(getColor(R.color.text_primary));
+                view.setBackgroundColor(getColor(R.color.obsidian_800));
+                view.setGravity(Gravity.CENTER);
+                view.setMinHeight((int) (44 * getResources().getDisplayMetrics().density));
+                return view;
+            }
+        };
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerCountryCode.setAdapter(adapter);
+        spinnerCountryCode.setSelection(0);
+        spinnerCountryCode.setEnabled(true);
+        spinnerCountryCode.setDropDownWidth((int) (82 * getResources().getDisplayMetrics().density));
+        spinnerCountryCode.setDropDownVerticalOffset((int) (8 * getResources().getDisplayMetrics().density));
+    }
+
+    private void signInWithEmailPassword() {
+        String email = etEmail.getText().toString().trim();
+        String password = etPassword.getText().toString();
+        if (!isValidEmail(email)) {
+            showStatus("Enter a valid email address", true);
+            return;
+        }
+        if (password.length() < 6) {
+            showStatus("Password must be at least 6 characters", true);
+            return;
+        }
+
+        setLoading(true, "Signing in...");
+        mAuth.signInWithEmailAndPassword(email, password)
+                .addOnCompleteListener(this, signInTask -> {
+                    if (signInTask.isSuccessful()) {
+                        onAuthSuccess(email);
+                        return;
+                    }
+
+                    setLoading(false, null);
+                    showStatus(mapAuthError(signInTask.getException(), "Email sign in failed"), true);
+                });
+    }
+
+    private void createAccountWithEmailPassword() {
+        String email = etEmail.getText().toString().trim();
+        String password = etPassword.getText().toString();
+        if (!isValidEmail(email)) {
+            showStatus("Enter your email first, then choose a password to create the account.", true);
+            return;
+        }
+        if (password.length() < 6) {
+            etPassword.requestFocus();
+            showStatus("Create account: enter a password with at least 6 characters.", true);
+            return;
+        }
+        createEmailAccount(email, password);
+    }
+
+    private void createEmailAccount(String email, String password) {
+        setLoading(true, "Creating account...");
+        mAuth.createUserWithEmailAndPassword(email, password)
+                .addOnCompleteListener(this, createTask -> {
+                    setLoading(false, null);
+                    if (createTask.isSuccessful()) {
+                        onAuthSuccess(email);
+                    } else {
+                        showStatus(mapAuthError(createTask.getException(), "Email signup failed"), true);
+                    }
+                });
+    }
+
+    private void sendPasswordReset() {
+        String email = etEmail.getText().toString().trim();
+        if (!isValidEmail(email)) {
+            etEmail.requestFocus();
+            showStatus("Enter your email address first, then tap forgot password again.", true);
+            return;
+        }
+
+        setLoading(true, "Sending reset link...");
+        mAuth.sendPasswordResetEmail(email)
+                .addOnCompleteListener(task -> {
+                    setLoading(false, null);
+                    if (task.isSuccessful()) {
+                        showStatus("Password reset link sent to " + email, false);
+                    } else {
+                        showStatus(mapAuthError(task.getException(), "Could not send reset link"), true);
                     }
                 });
     }
@@ -151,10 +315,11 @@ public class LoginActivity extends AppCompatActivity {
             return;
         }
 
-        userPhone = phone;
+        String countryCode = spinnerCountryCode.getSelectedItem().toString();
+        userPhone = countryCode + phone;
         setLoading(true, "Sending OTP...");
 
-        PhoneAuthOptions options = PhoneAuthOptions.newBuilder(mAuth)
+        PhoneAuthOptions.Builder optionsBuilder = PhoneAuthOptions.newBuilder(mAuth)
                 .setPhoneNumber(userPhone)
                 .setTimeout(60L, TimeUnit.SECONDS)
                 .setActivity(this)
@@ -182,9 +347,13 @@ public class LoginActivity extends AppCompatActivity {
                             showOtpScreen();
                         });
                     }
-                })
-                .build();
-        PhoneAuthProvider.verifyPhoneNumber(options);
+                });
+
+        if (resendToken != null) {
+            optionsBuilder.setForceResendingToken(resendToken);
+        }
+
+        PhoneAuthProvider.verifyPhoneNumber(optionsBuilder.build());
     }
 
     private void verifyOtp() {
@@ -206,8 +375,7 @@ public class LoginActivity extends AppCompatActivity {
                         setLoading(false, null);
                         if (task.isSuccessful()) {
                             FirebaseUser user = task.getResult().getUser();
-                            saveSession(user.getPhoneNumber());
-                            checkProfileAndNavigate();
+                            onAuthSuccess(user.getPhoneNumber());
                         } else {
                             showStatus("Verification failed", true);
                         }
@@ -215,49 +383,83 @@ public class LoginActivity extends AppCompatActivity {
                 });
     }
 
-    private void enterDemoMode() {
-        setLoading(true, "Bypassing login...");
-        mainHandler.postDelayed(() -> {
-            setLoading(false, null);
-            saveSession("anonymous");
-            navigateToDashboard();
-        }, 500);
-    }
-
-    private void saveSession(String identifier) {
-        SharedPreferences.Editor editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
-        editor.putBoolean("is_logged_in", true);
-        editor.putString("user_identifier", identifier);
-        editor.apply();
-    }
-
     private void showOtpScreen() {
+        layoutEmailInput.setVisibility(View.GONE);
         layoutPhoneInput.setVisibility(View.GONE);
-        btnGoogleSignIn.setVisibility(View.GONE);
         layoutOtpInput.setVisibility(View.VISIBLE);
-        btnDemoMode.setVisibility(View.GONE);
+        tvAuthHint.setText("Enter the OTP from Firebase. Forgot the code? Resend it below.");
 
         tvOtpSentTo.setText("OTP sent to " + userPhone);
         etOtp.requestFocus();
         showStatus("Check your phone for the verification code", false);
     }
 
+    private void onAuthSuccess(String identifier) {
+        setLoading(false, null);
+        saveSession(identifier);
+        checkProfileAndNavigate();
+    }
+
+    private void saveSession(String identifier) {
+        SharedPreferences.Editor editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
+        editor.putBoolean("is_logged_in", true);
+        editor.putString("user_identifier", identifier);
+        if (identifier != null && identifier.contains("@")) {
+            editor.putString("user_email", identifier);
+            editor.putString("user_phone", "");
+        } else if (identifier != null && !identifier.trim().isEmpty()) {
+            editor.putString("user_phone", identifier);
+        }
+        editor.apply();
+    }
+
     private void showStatus(String msg, boolean isError) {
         tvStatus.setVisibility(View.VISIBLE);
         tvStatus.setText(msg);
-        tvStatus.setTextColor(getColor(isError ? R.color.neon_crimson : R.color.cyber_green));
+        tvStatus.setTextColor(getColor(isError ? R.color.neon_crimson : R.color.cyber_cyan));
     }
 
     private void setLoading(boolean loading, String message) {
+        if (btnEmailSignIn == null) {
+            return;
+        }
+        btnEmailSignIn.setEnabled(!loading);
+        btnEmailSignUp.setEnabled(!loading);
+        btnGoogleSignIn.setEnabled(!loading);
+        btnPhoneMode.setEnabled(!loading);
+        etEmail.setEnabled(!loading);
+        etPassword.setEnabled(!loading);
+
         btnSendOtp.setEnabled(!loading);
         btnVerifyOtp.setEnabled(!loading);
-        btnGoogleSignIn.setEnabled(!loading);
         etPhone.setEnabled(!loading);
         etOtp.setEnabled(!loading);
 
         if (loading && message != null) {
             showStatus(message, false);
         }
+    }
+
+    private boolean isValidEmail(String email) {
+        return !TextUtils.isEmpty(email) && android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches();
+    }
+
+    private String mapAuthError(Exception error, String fallback) {
+        if (error == null) {
+            return fallback;
+        }
+        if (error instanceof FirebaseAuthInvalidCredentialsException) {
+            return "Invalid credentials. Check the email/password.";
+        }
+
+        String message = error.getMessage();
+        if (message == null) {
+            return fallback;
+        }
+        if (message.toLowerCase().contains("network")) {
+            return "Network issue while contacting Firebase. Check internet and retry.";
+        }
+        return fallback + ": " + message;
     }
 
     private void navigateToDashboard() {

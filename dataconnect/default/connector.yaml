@@ -1,0 +1,6 @@
+connectorId: "default"
+authMode: "PUBLIC"
+generate:
+  kotlinSdk:
+    outputDir: "../../app/src/main/java"
+    package: "com.scamshield.defender.dataconnect"

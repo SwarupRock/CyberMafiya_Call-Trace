@@ -9,6 +9,11 @@
     <!-- Phone state: detect incoming/outgoing calls & read caller number -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!-- SMS: detect scam and OTP messages for quarantine view -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
 
     <!-- Audio recording: capture mic for real-time scam analysis -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -34,42 +39,63 @@
 
     <!-- Keep CPU alive during audio analysis -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Network: Supabase backend communication -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
-        android:name=".ScamShieldApp"
+        android:name=".CallTraceApp"
         android:allowBackup="true"
         android:icon="@drawable/ic_shield"
         android:label="@string/app_name"
         android:roundIcon="@drawable/ic_shield"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ScamShield">
+        android:theme="@style/Theme.CallTrace">
 
         <!-- ── Login Activity (entry point) ────────────────── -->
         <activity
             android:name=".ui.LoginActivity"
             android:exported="true"
-            android:theme="@style/Theme.ScamShield">
+            android:theme="@style/Theme.CallTrace"
+            android:windowSoftInputMode="adjustPan|stateHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- ── Main Activity (Dashboard) ──────────────────── -->
+        <!-- ── Main Activity (Dashboard + Audio Share Target) ── -->
         <activity
             android:name=".ui.MainActivity"
-            android:exported="false"
-            android:theme="@style/Theme.ScamShield" />
+            android:exported="true"
+            android:theme="@style/Theme.CallTrace">
+            <!-- Accept shared audio files from other apps -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+            </intent-filter>
+        </activity>
 
         <!-- ── Profile Activity ───────────────────────────── -->
         <activity
             android:name=".ui.ProfileActivity"
             android:exported="false"
-            android:theme="@style/Theme.ScamShield" />
+            android:theme="@style/Theme.CallTrace" />
+
+        <!-- ── Call History Activity ──────────────────────── -->
+        <activity
+            android:name=".ui.CallHistoryActivity"
+            android:exported="false"
+            android:theme="@style/Theme.CallTrace" />
+
 
         <!-- ── Foreground Service (call monitoring + recording) ──── -->
         <service
@@ -85,6 +111,16 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.PHONE_STATE" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".receiver.SmsReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
             </intent-filter>
         </receiver>
 

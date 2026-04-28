@@ -15,3 +15,9 @@
 local.properties
 google-services.json
 app/build/
+.android/
+.kotlin/
+.idea/planningMode.xml
+app/debug.keystore
+old_login.java
+old_login.xml
