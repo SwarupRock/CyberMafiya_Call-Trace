@@ -1,0 +1,18 @@
+{
+  "name": "Scam Shield AI",
+  "short_name": "ScamShield",
+  "description": "Real-time call scam interception dashboard",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050505",
+  "theme_color": "#050505",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

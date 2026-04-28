@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ════════════════════════════════════════════════════════════
+         PERMISSIONS — Scam Call Defender
+         ════════════════════════════════════════════════════════════ -->
+
+    <!-- Phone state: detect incoming/outgoing calls & read caller number -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!-- SMS: detect scam and OTP messages for quarantine view -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+
+    <!-- Audio recording: capture mic for real-time scam analysis -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Vibration: double-buzz alert when scam is detected -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Foreground service: keep the defender alive during calls -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+
+    <!-- Post notifications (Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Block numbers after scam detection -->
+    <uses-permission android:name="android.permission.WRITE_BLOCKED_NUMBERS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Boot receiver: restart service on device reboot -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Keep CPU alive during audio analysis -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Network: Supabase backend communication -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".ScamShieldApp"
+        android:allowBackup="true"
+        android:icon="@drawable/ic_shield"
+        android:label="@string/app_name"
+        android:roundIcon="@drawable/ic_shield"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ScamShield">
+
+        <!-- ── Login Activity (entry point) ────────────────── -->
+        <activity
+            android:name=".ui.LoginActivity"
+            android:exported="true"
+            android:theme="@style/Theme.ScamShield"
+            android:windowSoftInputMode="adjustPan|stateHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ── Main Activity (Dashboard) ──────────────────── -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="false"
+            android:theme="@style/Theme.ScamShield" />
+
+        <!-- ── Profile Activity ───────────────────────────── -->
+        <activity
+            android:name=".ui.ProfileActivity"
+            android:exported="false"
+            android:theme="@style/Theme.ScamShield" />
+
+        <!-- ── Call History Activity ──────────────────────── -->
+        <activity
+            android:name=".ui.CallHistoryActivity"
+            android:exported="false"
+            android:theme="@style/Theme.ScamShield" />
+
+
+        <!-- ── Foreground Service (call monitoring + recording) ──── -->
+        <service
+            android:name=".service.CallDefenderService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- ── Broadcast Receiver (phone state changes) ──────── -->
+        <receiver
+            android:name=".receiver.CallReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PHONE_STATE" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".receiver.SmsReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ── Boot Receiver (restart defender on reboot) ─────── -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

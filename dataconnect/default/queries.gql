@@ -1,0 +1,45 @@
+query GetUserProfile @auth(level: USER) {
+  userProfile(key: { id_expr: "auth.uid" }) {
+    id
+    phoneNumber
+    email
+    country
+    createdAt
+  }
+}
+
+query GetRecentCallLogs($userId: String!) @auth(level: USER) {
+  callLogs(where: { userId: { eq: $userId } }, orderBy: [{ analyzedAt: DESC }], limit: 50) {
+    id
+    userId
+    phoneNumber
+    callDurationSeconds
+    scamScore
+    isScam
+    deepfakeScore
+    analyzedAt
+  }
+}
+
+query GetBlockedNumbers($blockedBy: String!) @auth(level: USER) {
+  blockedNumbers(where: { blockedBy: { eq: $blockedBy } }) {
+    id
+    phoneNumber
+    blockedBy
+    reason
+    scamScore
+    reportCount
+    createdAt
+  }
+}
+
+query GetScamNumber($phoneNumber: String!) @auth(level: PUBLIC, insecureReason: "Public scam number verification") {
+  scamNumber(id: $phoneNumber) {
+    id
+    totalReports
+    avgScamScore
+    firstReported
+    lastReported
+    isVerifiedScam
+  }
+}
