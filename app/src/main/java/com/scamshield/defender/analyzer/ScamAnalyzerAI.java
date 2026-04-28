@@ -6,6 +6,7 @@ import android.util.Log;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.annotations.SerializedName;
@@ -34,6 +35,8 @@ public class ScamAnalyzerAI {
     private static final String PREF_NVIDIA_ASR_API_KEY = "nvidia_asr_api_key";
     private static final String NVIDIA_MODEL = "meta/llama-3.1-8b-instruct";
     private static final String NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
+    private static final String NVIDIA_ASR_MODEL = "nvidia/parakeet-ctc-1_1b-asr";
+    private static final String NVIDIA_ASR_ENDPOINT = "https://integrate.api.nvidia.com/v1/audio/transcriptions";
 
     private static final Map<String, String[]> SCAM_KEYWORDS = new HashMap<>();
 
@@ -356,6 +359,18 @@ public class ScamAnalyzerAI {
         }
 
         int code = conn.getResponseCode();
+        String response = readHttpResponse(conn, code);
+        conn.disconnect();
+
+        if (code < 200 || code >= 300) {
+            throw new IllegalStateException("NVIDIA HTTP " + code + ": " + response);
+        }
+
+        String modelText = extractChatCompletionText(response);
+        return gson.fromJson(stripJsonFence(modelText), CloudResponse.class);
+    }
+
+    private String readHttpResponse(HttpURLConnection conn, int code) throws Exception {
         BufferedReader reader = new BufferedReader(new InputStreamReader(
                 code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(),
                 StandardCharsets.UTF_8));
@@ -365,14 +380,7 @@ public class ScamAnalyzerAI {
             response.append(line);
         }
         reader.close();
-        conn.disconnect();
-
-        if (code < 200 || code >= 300) {
-            throw new IllegalStateException("NVIDIA HTTP " + code + ": " + response);
-        }
-
-        String modelText = extractChatCompletionText(response.toString());
-        return gson.fromJson(stripJsonFence(modelText), CloudResponse.class);
+        return response.toString();
     }
 
     private String extractChatCompletionText(String responseJson) {
@@ -403,25 +411,28 @@ public class ScamAnalyzerAI {
     private void applyCloudResult(CloudResponse cloud) {
         if (cloud == null) return;
 
-        if (cloud.confidence > currentScore) {
-            currentScore = cloud.confidence;
-        }
-
-        AnalysisResult result = new AnalysisResult();
-        result.confidence = currentScore;
-        result.isScam = cloud.isScam;
-        result.threatType = cloud.threatType != null ? cloud.threatType : threatCategory;
-        result.reasoning = cloud.reasoning != null ? cloud.reasoning : "Cloud AI analysis";
-        result.keywordsFound = cloud.keywordsFound != null && !cloud.keywordsFound.isEmpty()
-                ? new ArrayList<>(cloud.keywordsFound)
-                : new ArrayList<>(detectedKeywords);
-        result.fromCloud = true;
+        AnalysisResult result = buildCloudAnalysisResult(cloud, currentScore, threatCategory);
+        currentScore = result.confidence;
+        threatCategory = result.threatType;
 
         latestResult = result;
         notifyListeners(result);
 
         Log.i(TAG, "Cloud verdict: " + (cloud.isScam ? "SCAM" : "SAFE")
                 + " (" + (cloud.confidence * 100) + "%)");
+    }
+
+    private AnalysisResult buildCloudAnalysisResult(CloudResponse cloud, float fallbackScore, String fallbackThreat) {
+        AnalysisResult result = new AnalysisResult();
+        result.confidence = Math.max(cloud.confidence, fallbackScore);
+        result.isScam = cloud.isScam || result.confidence >= LOCAL_ALERT_THRESHOLD;
+        result.threatType = cloud.threatType != null ? cloud.threatType : fallbackThreat;
+        result.reasoning = cloud.reasoning != null ? cloud.reasoning : "NVIDIA AI analysis";
+        result.keywordsFound = cloud.keywordsFound != null && !cloud.keywordsFound.isEmpty()
+                ? new ArrayList<>(cloud.keywordsFound)
+                : new ArrayList<>(detectedKeywords);
+        result.fromCloud = true;
+        return result;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -458,7 +469,110 @@ public class ScamAnalyzerAI {
         }
 
         cloudExecutor.execute(() -> {
-            callback.onError("NVIDIA ASR/Riva audio transcription is configured with your ASR key, but the Android Riva gRPC client/proxy is not installed yet.");
+            try {
+                String transcript = transcribeAudioWithNvidia(asrKey.trim(), audioData, mimeType);
+                if (transcript == null || transcript.trim().isEmpty()) {
+                    throw new IllegalStateException("NVIDIA ASR returned an empty transcript.");
+                }
+
+                String cleanedTranscript = transcript.trim();
+                callback.onTranscriptReady(cleanedTranscript);
+
+                CloudResponse cloud = callNvidia(llmKey.trim(), cleanedTranscript);
+                AnalysisResult result = buildCloudAnalysisResult(cloud, 0f, "none");
+                callback.onAnalysisComplete(result, cleanedTranscript);
+            } catch (Exception e) {
+                Log.e(TAG, "NVIDIA audio analysis failed", e);
+                callback.onError("NVIDIA audio analysis failed: " + e.getMessage());
+            }
         });
+    }
+
+    private String transcribeAudioWithNvidia(String apiKey, byte[] audioData, String mimeType) throws Exception {
+        URL url = new URL(NVIDIA_ASR_ENDPOINT);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        String boundary = "CallTraceBoundary" + System.currentTimeMillis();
+        conn.setRequestMethod("POST");
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(60000);
+        conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        conn.setDoOutput(true);
+
+        try (OutputStream os = conn.getOutputStream()) {
+            writeMultipartField(os, boundary, "model", NVIDIA_ASR_MODEL);
+            writeMultipartField(os, boundary, "response_format", "json");
+            writeMultipartFile(os, boundary, "file", "call-trace-audio", mimeType, audioData);
+            os.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        }
+
+        int code = conn.getResponseCode();
+        String response = readHttpResponse(conn, code);
+        conn.disconnect();
+
+        if (code < 200 || code >= 300) {
+            throw new IllegalStateException("NVIDIA ASR HTTP " + code + ": " + response);
+        }
+
+        return extractTranscriptText(response);
+    }
+
+    private void writeMultipartField(OutputStream os, String boundary, String name, String value) throws Exception {
+        os.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+        os.write(("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        os.write(value.getBytes(StandardCharsets.UTF_8));
+        os.write("\r\n".getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void writeMultipartFile(OutputStream os, String boundary, String name, String filename,
+                                    String mimeType, byte[] data) throws Exception {
+        String contentType = mimeType == null || mimeType.trim().isEmpty() ? "audio/mpeg" : mimeType;
+        os.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+        os.write(("Content-Disposition: form-data; name=\"" + name + "\"; filename=\"" + filename + "\"\r\n")
+                .getBytes(StandardCharsets.UTF_8));
+        os.write(("Content-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        os.write(data);
+        os.write("\r\n".getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String extractTranscriptText(String responseJson) {
+        JsonElement parsed = JsonParser.parseString(responseJson);
+        if (!parsed.isJsonObject()) {
+            return responseJson;
+        }
+
+        JsonObject root = parsed.getAsJsonObject();
+        if (root.has("text") && !root.get("text").isJsonNull()) {
+            return root.get("text").getAsString();
+        }
+        if (root.has("transcript") && !root.get("transcript").isJsonNull()) {
+            return root.get("transcript").getAsString();
+        }
+        if (root.has("results") && root.get("results").isJsonArray()) {
+            return joinTranscriptArray(root.getAsJsonArray("results"));
+        }
+        if (root.has("segments") && root.get("segments").isJsonArray()) {
+            return joinTranscriptArray(root.getAsJsonArray("segments"));
+        }
+        throw new IllegalStateException("NVIDIA ASR response did not include transcript text.");
+    }
+
+    private String joinTranscriptArray(JsonArray array) {
+        StringBuilder transcript = new StringBuilder();
+        for (JsonElement item : array) {
+            if (!item.isJsonObject()) continue;
+            JsonObject object = item.getAsJsonObject();
+            String part = null;
+            if (object.has("text") && !object.get("text").isJsonNull()) {
+                part = object.get("text").getAsString();
+            } else if (object.has("transcript") && !object.get("transcript").isJsonNull()) {
+                part = object.get("transcript").getAsString();
+            }
+            if (part != null && !part.trim().isEmpty()) {
+                if (transcript.length() > 0) transcript.append(' ');
+                transcript.append(part.trim());
+            }
+        }
+        return transcript.toString();
     }
 }

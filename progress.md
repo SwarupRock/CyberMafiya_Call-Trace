@@ -9,9 +9,10 @@
 - Added known scam number lookup through Firebase/Firestore.
 - Added peak vibration warnings for risky live calls.
 - Added local scam keyword and pattern analysis.
-- Removed Gemini from the user-facing AI setup.
+- Switched the user-facing AI setup to NVIDIA-only keys.
 - Added separate NVIDIA LLM and NVIDIA ASR key inputs.
 - Added NVIDIA cloud analysis for live transcripts using NVIDIA chat completions.
+- Added NVIDIA ASR upload flow for audio-file transcription before scam analysis.
 - Added Firestore call history persistence.
 - Added Firestore blocked number persistence.
 - Added call history screen, filters, and CSV export.
@@ -24,8 +25,8 @@
 
 ## In Progress / Next
 
-- Complete NVIDIA Riva/ASR transcription for uploaded audio files.
-- Add a backend proxy for NVIDIA audio transcription if direct Android gRPC becomes too heavy.
+- Test uploaded audio transcription with the user's NVIDIA ASR account limits and supported formats.
+- Add a backend proxy only if the NVIDIA ASR account requires server-side mediation.
 - Improve live call transcript reliability across Android devices.
 - Add automated instrumentation tests for call state transitions.
 - Add safer sample Firebase rules for production use.
@@ -43,4 +44,4 @@ Android debug build was verified with:
 
 - `google-services.json` is intentionally ignored and must be supplied locally.
 - NVIDIA LLM and NVIDIA ASR keys are stored separately on device.
-- Uploaded audio transcription is prepared for NVIDIA Riva/ASR and needs the Android gRPC client or backend proxy.
+- Uploaded audio analysis now sends audio for NVIDIA ASR, then sends the transcript through NVIDIA LLM scam analysis.
