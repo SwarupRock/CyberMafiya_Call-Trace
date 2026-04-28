@@ -64,7 +64,7 @@
                         android:layout_marginTop="4dp"
                         android:fontFamily="monospace"
                         android:letterSpacing="0.08"
-                        android:text="SCAM SHIELD AI"
+                        android:text="CALL TRACE"
                         android:textColor="@android:color/white"
                         android:textSize="23sp"
                         android:textStyle="bold" />

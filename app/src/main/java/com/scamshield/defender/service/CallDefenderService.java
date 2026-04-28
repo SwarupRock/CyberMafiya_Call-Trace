@@ -116,7 +116,7 @@ public class CallDefenderService extends Service {
     public void onCreate() {
         super.onCreate();
         Log.i(TAG, "╔══════════════════════════════════════╗");
-        Log.i(TAG, "║  SCAM SHIELD AI — INITIALIZED        ║");
+        Log.i(TAG, "║  CALL TRACE — INITIALIZED           ║");
         Log.i(TAG, "╚══════════════════════════════════════╝");
 
         mainHandler = new Handler(Looper.getMainLooper());
@@ -647,7 +647,7 @@ public class CallDefenderService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Scam Shield AI")
+                .setContentTitle("Call Trace")
                 .setContentText(text)
                 .setSmallIcon(R.drawable.ic_shield)
                 .setContentIntent(pi)

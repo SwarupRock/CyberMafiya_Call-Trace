@@ -327,7 +327,7 @@ public class MainActivity extends AppCompatActivity {
 
         new AlertDialog.Builder(this)
                 .setTitle("Keep Shield Running")
-                .setMessage("Allow Scam Shield AI to run in the background so it can detect calls and scam messages even when the app is closed.")
+                .setMessage("Allow Call Trace to run in the background so it can detect calls and scam messages even when the app is closed.)")
                 .setPositiveButton("Open Settings", (dialog, which) -> {
                     prefs.edit().putBoolean(PREF_BACKGROUND_PROMPTED, true).apply();
                     openBackgroundSettings();

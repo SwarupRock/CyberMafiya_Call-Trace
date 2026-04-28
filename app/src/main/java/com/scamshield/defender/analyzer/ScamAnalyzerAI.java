@@ -329,7 +329,7 @@ public class ScamAnalyzerAI {
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setDoOutput(true);
 
-        String prompt = "You are Scam Shield AI analyzing an English phone-call transcript in real time. " +
+        String prompt = "You are Call Trace analyzing an English phone-call transcript in real time. " +
                 "Return only JSON with keys: is_scam boolean, confidence number 0-1, " +
                 "threat_type string, reasoning string, keywords_found string array. " +
                 "Flag OTP, bank or KYC impersonation, urgent account freeze, remote access, legal threats, " +
