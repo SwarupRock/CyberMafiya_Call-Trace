@@ -1222,8 +1222,8 @@ public class MainActivity extends AppCompatActivity {
                     public void onTranscriptReady(String transcript) {
                         runOnUiThread(() -> {
                             tvTranscript.setTextColor(getColor(R.color.cyber_cyan));
-                            tvTranscript.setText("📝 TRANSCRIPT:\n\n" + transcript);
-                            scrollTranscript.post(() -> scrollTranscript.fullScroll(View.FOCUS_DOWN));
+                            tvTranscript.setText("TRANSCRIPT\n\n" + transcript + "\n\nAnalyzing scam risk...");
+                            scrollTranscript.post(() -> scrollTranscript.fullScroll(View.FOCUS_UP));
                         });
                     }
 
@@ -1262,16 +1262,16 @@ public class MainActivity extends AppCompatActivity {
 
                             // Update transcript with full analysis
                             StringBuilder sb = new StringBuilder();
-                            sb.append("📝 TRANSCRIPT:\n\n").append(transcript);
-                            sb.append("\n\n═══════════════════════════\n");
-                            sb.append("🔍 ANALYSIS RESULT\n");
+                            sb.append("ANALYZER RESULT\n");
+                            sb.append("Verdict: ").append(result.isScam ? "SCAM DETECTED" : "SAFE").append("\n");
                             sb.append("Risk: ").append(result.getThreatLevel()).append("\n");
                             sb.append("Confidence: ").append(pct).append("%\n");
                             sb.append("Type: ").append(result.threatType).append("\n");
-                            sb.append("Verdict: ").append(result.isScam ? "⚠️ SCAM DETECTED" : "✅ SAFE").append("\n");
                             sb.append("Reasoning: ").append(result.reasoning);
+                            sb.append("\n\n---------------------------\n");
+                            sb.append("TRANSCRIPT\n\n").append(transcript);
                             tvTranscript.setText(sb.toString());
-                            scrollTranscript.post(() -> scrollTranscript.fullScroll(View.FOCUS_DOWN));
+                            scrollTranscript.post(() -> scrollTranscript.fullScroll(View.FOCUS_UP));
 
                             // Save to history
                             saveAudioAnalysisToHistory(transcript, result);
