@@ -98,6 +98,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean startAfterAiKeys = false;
     private boolean startAfterPermissions = false;
     private StringBuilder transcriptBuilder = new StringBuilder();
+    private String pendingPartialTranscript = "";
     private ScamAnalyzerAI audioAnalyzer;
     private ActivityResultLauncher<Intent> audioPickerLauncher;
 
@@ -300,11 +301,13 @@ public class MainActivity extends AppCompatActivity {
         panel.addView(subtitle, subtitleParams);
 
         Button nvidiaButton = createMenuButton("AI API KEY", R.drawable.menu_button_cyan, R.color.cyber_cyan);
+        Button childSafetyButton = createMenuButton("CHILD SAFETY", R.drawable.menu_button_red, R.color.neon_crimson);
         Button historyButton = createMenuButton("CALL HISTORY", R.drawable.menu_button_cyan, R.color.cyber_cyan);
         Button backgroundButton = createMenuButton("BACKGROUND PROTECTION", R.drawable.menu_button_cyan, R.color.cyber_cyan);
         Button logoutButton = createMenuButton("LOGOUT", R.drawable.menu_button_red, R.color.neon_crimson);
 
         panel.addView(nvidiaButton);
+        panel.addView(childSafetyButton);
         panel.addView(historyButton);
         panel.addView(backgroundButton);
         panel.addView(logoutButton);
@@ -316,6 +319,10 @@ public class MainActivity extends AppCompatActivity {
         nvidiaButton.setOnClickListener(v -> {
             dialog.dismiss();
             promptForNvidiaApiKeys(false);
+        });
+        childSafetyButton.setOnClickListener(v -> {
+            dialog.dismiss();
+            startActivity(new Intent(MainActivity.this, ChildSafetySettingsActivity.class));
         });
         historyButton.setOnClickListener(v -> {
             dialog.dismiss();
@@ -982,6 +989,7 @@ public class MainActivity extends AppCompatActivity {
                 tvCallState.setTextColor(getColor(R.color.neon_amber));
                 tvCallerNumber.setText("From: " + (number != null ? number : "Unknown"));
                 transcriptBuilder.setLength(0);
+                pendingPartialTranscript = "";
                 tvTranscript.setText("Incoming call detected. Answer it to start live scam analysis.");
                 resetThreatUI();
                 break;
@@ -989,8 +997,7 @@ public class MainActivity extends AppCompatActivity {
             case "ACTIVE":
                 tvCallState.setText("⚡ CALL ACTIVE — ANALYZING");
                 tvCallState.setTextColor(getColor(R.color.neon_crimson));
-                tvTranscript.setText("🔊 Enable SPEAKER MODE for live transcription\nListening...");
-                if (transcriptBuilder.length() == 0) {
+                if (transcriptBuilder.length() == 0 && pendingPartialTranscript.isEmpty()) {
                     tvTranscript.setText("Listening to this incoming call for scam phrases like OTP, KYC, bank, police, refund, and remote access...");
                 }
                 livePulse.setVisibility(View.VISIBLE);
@@ -1000,7 +1007,7 @@ public class MainActivity extends AppCompatActivity {
                 tvCallState.setText("MONITORING");
                 tvCallState.setTextColor(getColor(R.color.cyber_cyan));
                 tvCallerNumber.setText("Waiting for incoming call...");
-                if (transcriptBuilder.length() == 0) {
+                if (transcriptBuilder.length() == 0 && pendingPartialTranscript.isEmpty()) {
                     tvTranscript.setText("Waiting for incoming call. Scam warnings will vibrate 3 times during suspicious calls.");
                 }
                 livePulse.setVisibility(View.GONE);
@@ -1028,24 +1035,72 @@ public class MainActivity extends AppCompatActivity {
         String text = intent.getStringExtra("text");
         boolean isPartial = intent.getBooleanExtra("partial", false);
         boolean isStatus = intent.getBooleanExtra("status", false);
+        boolean isSnapshot = intent.getBooleanExtra("snapshot", false);
+        String transcriptSnapshot = intent.getStringExtra("transcript_snapshot");
 
         if (text == null) return;
 
-        if (isStatus) {
-            String current = transcriptBuilder.toString();
-            tvTranscript.setText((current.isEmpty() ? "" : current + "\n\n")
-                    + "STATUS: " + text);
+        if (isSnapshot) {
+            applyTranscriptSnapshot(transcriptSnapshot != null ? transcriptSnapshot : text);
         } else if (isPartial) {
-            // Show partial (in-progress) text in dimmer color
-            String current = transcriptBuilder.toString();
-            tvTranscript.setText(current + (current.isEmpty() ? "" : "\n") + "▸ " + text);
+            pendingPartialTranscript = text.trim();
+            renderTranscriptBox(null);
+        } else if (isStatus) {
+            applyTranscriptSnapshot(transcriptSnapshot);
+            renderTranscriptBox(text);
         } else {
-            // Final text
-            if (transcriptBuilder.length() > 0) transcriptBuilder.append("\n");
-            transcriptBuilder.append("» ").append(text);
-            tvTranscript.setText(transcriptBuilder.toString());
+            pendingPartialTranscript = "";
+            String cleanText = text.trim();
+            String visibleTranscript = normalizeTranscriptText(transcriptBuilder.toString());
+            if (!cleanText.isEmpty()
+                    && !visibleTranscript.toLowerCase().contains(cleanText.toLowerCase())) {
+                if (transcriptBuilder.length() > 0) transcriptBuilder.append("\n");
+                transcriptBuilder.append("» ").append(cleanText);
+            }
+            renderTranscriptBox(null);
         }
         scrollTranscript.post(() -> scrollTranscript.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void renderTranscriptBox(String statusText) {
+        StringBuilder display = new StringBuilder(transcriptBuilder.toString());
+
+        if (!pendingPartialTranscript.isEmpty()) {
+            if (display.length() > 0) display.append("\n");
+            display.append("▸ ").append(pendingPartialTranscript);
+        }
+
+        if (statusText != null && !statusText.trim().isEmpty()) {
+            if (display.length() > 0) display.append("\n\n");
+            display.append("STATUS: ").append(statusText.trim());
+        }
+
+        tvTranscript.setText(display.toString());
+    }
+
+    private void applyTranscriptSnapshot(String snapshot) {
+        if (snapshot == null || snapshot.trim().isEmpty()) return;
+
+        String cleanSnapshot = snapshot.trim();
+        String visibleTranscript = normalizeTranscriptText(transcriptBuilder.toString()
+                + " " + pendingPartialTranscript);
+
+        if (visibleTranscript.length() >= cleanSnapshot.length()
+                && visibleTranscript.toLowerCase().contains(cleanSnapshot.toLowerCase())) {
+            return;
+        }
+
+        transcriptBuilder.setLength(0);
+        transcriptBuilder.append("» ").append(cleanSnapshot);
+        pendingPartialTranscript = "";
+    }
+
+    private String normalizeTranscriptText(String text) {
+        if (text == null) return "";
+        return text.replace("»", "")
+                .replace("▸", "")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     private void handleThreatUpdate(Intent intent) {
@@ -1054,6 +1109,8 @@ public class MainActivity extends AppCompatActivity {
         String type = intent.getStringExtra("type");
         String keywords = intent.getStringExtra("keywords");
         boolean fromCloud = intent.getBooleanExtra("from_cloud", false);
+        applyTranscriptSnapshot(intent.getStringExtra("transcript_snapshot"));
+        renderTranscriptBox(null);
 
         int percent = (int) (confidence * 100);
         progressThreat.setProgress(percent);

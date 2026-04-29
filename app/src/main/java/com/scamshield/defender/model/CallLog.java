@@ -1,6 +1,7 @@
 package com.scamshield.defender.model;
 
 import com.google.gson.annotations.SerializedName;
+import com.google.firebase.Timestamp;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -113,6 +114,14 @@ public class CallLog {
     private static long getLong(Map<String, Object> m, String k) {
         Object v = m.get(k);
         if (v instanceof Number) return ((Number) v).longValue();
+        if (v instanceof Timestamp) return ((Timestamp) v).toDate().getTime();
+        if (v instanceof java.util.Date) return ((java.util.Date) v).getTime();
+        if (v instanceof String) {
+            try {
+                return Long.parseLong((String) v);
+            } catch (NumberFormatException ignored) {
+            }
+        }
         return 0L;
     }
 

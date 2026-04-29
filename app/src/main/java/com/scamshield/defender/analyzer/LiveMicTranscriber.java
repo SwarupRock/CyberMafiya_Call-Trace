@@ -15,25 +15,46 @@ import java.io.ByteArrayOutputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * ═══════════════════════════════════════════════════════════════════
+ * LiveMicTranscriber — Speakerphone Mic Capture for Live ASR
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * Consumer Android builds usually block direct call downlink capture.
+ * This class therefore treats the active call like any other loud audio:
+ * put the call on speakerphone, capture it with the microphone, transcribe
+ * the mic stream, then feed that transcript into scam analysis.
+ */
 public class LiveMicTranscriber {
     private static final String TAG = "LiveMicTranscriber";
     private static final int SAMPLE_RATE = 16000;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
-    private static final int CHUNK_MS = 8000;
+    private static final int CHUNK_MS = 3000;       // 3s chunks
     private static final int CHUNK_BYTES = (SAMPLE_RATE * 2 * CHUNK_MS) / 1000;
-    private static final double MIN_RMS = 28.0;
+    private static final double MIN_RMS = 4.0;       // Even lower threshold for telephony audio
     private static final double TARGET_RMS = 1800.0;
-    private static final double MAX_GAIN = 24.0;
-    private static final int QUIET_CHUNKS_BEFORE_FORCED_ASR = 2;
+    private static final double MAX_GAIN = 60.0;     // Very aggressive amplification for quiet telephony audio
+    private static final int QUIET_CHUNKS_BEFORE_REPROBE = 4;  // Reprobe after 4 quiet chunks (~12s)
+    private static final int QUIET_CHUNKS_BEFORE_DEAD = 8;     // Give up after 8 quiet chunks (~24s)
+    private static final int MAX_REPROBE_ATTEMPTS = 5;          // More reprobe attempts
+    private static final long STARTUP_DELAY_MS = 2000L;         // Longer: wait for telephony audio to start
+    private static final long PROBE_DURATION_MS = 1500L;        // Longer probe to catch intermittent audio
 
     private final Context context;
     private final ScamAnalyzerAI analyzer;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicInteger reprobeCount = new AtomicInteger(0);
     private Listener listener;
     private int quietChunks = 0;
+    private int totalChunksProcessed = 0;
+    private int successfulTranscripts = 0;
+    private int activeSourceId = -1;
+    private String lastStatus = "";
+    private long lastStatusAt = 0L;
 
     public interface Listener {
         void onTranscript(String text);
@@ -79,15 +100,29 @@ public class LiveMicTranscriber {
     }
 
     private void recordLoop() {
+        // Wait for speaker routing and call audio to settle.
+        try {
+            Log.i(TAG, "Waiting " + STARTUP_DELAY_MS + "ms for speakerphone audio to start...");
+            notifyStatus("Listening through microphone for caller audio...");
+            Thread.sleep(STARTUP_DELAY_MS);
+        } catch (InterruptedException e) {
+            if (!running.get()) return;
+        }
+
         AudioRecord recorder = null;
         try {
             recorder = createBestRecorder();
             if (recorder == null) {
-                throw new IllegalStateException("Could not open microphone for live transcription.");
+                notifyError("Could not open any audio source for call capture.");
+                notifyDeadAudioInput();
+                return;
             }
 
             recorder.startRecording();
-            notifyStatus("Live cloud transcription is listening through the microphone.");
+            notifyStatus("Live transcription is listening through the phone microphone.");
+            totalChunksProcessed = 0;
+            successfulTranscripts = 0;
+            quietChunks = 0;
 
             byte[] readBuffer = new byte[Math.max(4096, AudioRecord.getMinBufferSize(
                     SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT))];
@@ -95,13 +130,22 @@ public class LiveMicTranscriber {
 
             while (running.get()) {
                 int read = recorder.read(readBuffer, 0, readBuffer.length);
-                if (read <= 0) continue;
+                if (read <= 0) {
+                    Log.w(TAG, "AudioRecord.read returned " + read);
+                    continue;
+                }
 
                 chunk.write(readBuffer, 0, read);
                 if (chunk.size() >= CHUNK_BYTES) {
                     byte[] pcm = chunk.toByteArray();
                     chunk.reset();
-                    transcribeChunkIfAudible(pcm);
+                    totalChunksProcessed++;
+                    double level = rms(pcm);
+                    Log.i(TAG, "Chunk #" + totalChunksProcessed
+                            + " src=" + activeSourceId
+                            + " size=" + pcm.length + " RMS=" + Math.round(level)
+                            + " quietStreak=" + quietChunks);
+                    processChunk(pcm, level);
                 }
             }
         } catch (Exception e) {
@@ -116,21 +160,37 @@ public class LiveMicTranscriber {
                 recorder.release();
             }
             running.set(false);
+            Log.i(TAG, "Recording stopped. Source=" + activeSourceId
+                    + " Chunks=" + totalChunksProcessed
+                    + " Transcripts=" + successfulTranscripts);
         }
     }
 
+    /**
+     * Try microphone sources and pick the one with the highest RMS.
+     * Direct telephony sources are intentionally skipped because most
+     * devices return hard zero audio for third-party apps.
+     */
     private AudioRecord createBestRecorder() {
-        int[] sources = getCandidateSources();
+        int[] sources = getMicrophoneSources();
         AudioRecord best = null;
         double bestRms = -1.0;
         int bestSource = -1;
 
+        notifyStatus("Checking microphone audio for speakerphone transcription...");
+
         for (int source : sources) {
+            String sourceName = sourceIdToName(source);
+            Log.i(TAG, "Probing source: " + sourceName + " (" + source + ")");
             AudioRecord candidate = createRecorder(source);
-            if (candidate == null) continue;
+            if (candidate == null) {
+                Log.i(TAG, "  → " + sourceName + ": FAILED to create");
+                continue;
+            }
 
             double probeRms = probeRecorder(candidate);
-            Log.i(TAG, "Audio source " + source + " probe RMS=" + Math.round(probeRms));
+            Log.i(TAG, "  → " + sourceName + ": RMS=" + Math.round(probeRms));
+
             if (probeRms > bestRms) {
                 if (best != null) best.release();
                 best = candidate;
@@ -139,36 +199,63 @@ public class LiveMicTranscriber {
             } else {
                 candidate.release();
             }
+
+            // If we found a good source, stop searching
+            if (probeRms > MIN_RMS * 2) {
+                Log.i(TAG, "Found good source: " + sourceName + " RMS=" + Math.round(probeRms));
+                break;
+            }
+        }
+
+        // If probing happened during silence, still start with MIC and wait
+        // for the caller to speak.
+        if (best == null || bestRms <= 0) {
+            Log.w(TAG, "Microphone probe was quiet. Forcing MIC and waiting for speech...");
+            notifyStatus("Microphone is open. Waiting for the caller to speak...");
+
+            int[] forceSources = new int[]{
+                    MediaRecorder.AudioSource.MIC,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    MediaRecorder.AudioSource.CAMCORDER
+            };
+            for (int source : forceSources) {
+                AudioRecord forced = createRecorder(source);
+                if (forced != null) {
+                    if (best != null) best.release();
+                    best = forced;
+                    bestSource = source;
+                    Log.i(TAG, "Force-selected source: " + sourceIdToName(source));
+                    break;
+                }
+            }
         }
 
         if (best != null) {
-            notifyStatus("Live cloud transcription selected mic source " + bestSource
-                    + " (level " + Math.round(bestRms) + ").");
+            activeSourceId = bestSource;
+            String msg = "Using audio source: " + sourceIdToName(bestSource)
+                    + " (level " + Math.round(bestRms) + ")";
+            Log.i(TAG, msg);
+            notifyStatus(msg);
         }
         return best;
     }
 
-    private int[] getCandidateSources() {
+    /**
+     * Microphone sources for speakerphone capture.
+     */
+    private int[] getMicrophoneSources() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             return new int[]{
-                    MediaRecorder.AudioSource.UNPROCESSED,
-                    MediaRecorder.AudioSource.VOICE_CALL,
-                    MediaRecorder.AudioSource.VOICE_DOWNLINK,
-                    MediaRecorder.AudioSource.VOICE_UPLINK,
-                    MediaRecorder.AudioSource.MIC,
-                    MediaRecorder.AudioSource.CAMCORDER,
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,   // 6
+                    MediaRecorder.AudioSource.MIC,                 // 1
+                    MediaRecorder.AudioSource.UNPROCESSED,          // 9
+                    MediaRecorder.AudioSource.CAMCORDER            // 5
             };
         }
         return new int[]{
-                MediaRecorder.AudioSource.VOICE_CALL,
-                MediaRecorder.AudioSource.VOICE_DOWNLINK,
-                MediaRecorder.AudioSource.VOICE_UPLINK,
-                MediaRecorder.AudioSource.MIC,
-                MediaRecorder.AudioSource.CAMCORDER,
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.CAMCORDER
         };
     }
 
@@ -176,28 +263,37 @@ public class LiveMicTranscriber {
         int minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT);
         if (minBuffer <= 0) return null;
 
-        int bufferSize = Math.max(minBuffer * 4, CHUNK_BYTES / 2);
+        int bufferSize = Math.max(minBuffer * 4, CHUNK_BYTES);
         try {
             AudioRecord recorder = new AudioRecord(source, SAMPLE_RATE, CHANNEL_CONFIG,
                     AUDIO_FORMAT, bufferSize);
             if (recorder.getState() == AudioRecord.STATE_INITIALIZED) {
                 return recorder;
             }
+            Log.w(TAG, "AudioRecord source " + source + " not initialized");
             recorder.release();
+        } catch (SecurityException e) {
+            Log.w(TAG, "SecurityException for source " + source + ": " + e.getMessage());
+        } catch (IllegalArgumentException e) {
+            Log.w(TAG, "Invalid source " + source + ": " + e.getMessage());
         } catch (Exception e) {
             Log.w(TAG, "AudioRecord source failed: " + source, e);
         }
         return null;
     }
 
+    /**
+     * Probe a recorder for PROBE_DURATION_MS to check if we get audio.
+     * Extended to 1.5s for telephony sources which may have delayed start.
+     */
     private double probeRecorder(AudioRecord recorder) {
         byte[] buffer = new byte[Math.max(4096, AudioRecord.getMinBufferSize(
                 SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT))];
-        ByteArrayOutputStream sample = new ByteArrayOutputStream(buffer.length * 3);
+        ByteArrayOutputStream sample = new ByteArrayOutputStream(buffer.length * 5);
 
         try {
             recorder.startRecording();
-            long deadline = System.currentTimeMillis() + 700L;
+            long deadline = System.currentTimeMillis() + PROBE_DURATION_MS;
             while (System.currentTimeMillis() < deadline) {
                 int read = recorder.read(buffer, 0, buffer.length);
                 if (read > 0) sample.write(buffer, 0, read);
@@ -214,42 +310,62 @@ public class LiveMicTranscriber {
         return rms(sample.toByteArray());
     }
 
-    private void transcribeChunkIfAudible(byte[] pcm) {
-        double level = rms(pcm);
+    private void processChunk(byte[] pcm, double level) {
         if (level < MIN_RMS) {
             quietChunks++;
-            if (Math.round(level) == 0 && quietChunks >= QUIET_CHUNKS_BEFORE_FORCED_ASR) {
+
+            if (quietChunks >= QUIET_CHUNKS_BEFORE_DEAD) {
+                Log.w(TAG, "Dead audio after " + quietChunks + " chunks");
+                notifyStatus("Still no microphone audio from the speaker. Check Android microphone access and call speaker output.");
                 notifyDeadAudioInput();
-            }
-            if (quietChunks < QUIET_CHUNKS_BEFORE_FORCED_ASR) {
-                notifyStatus("Mic level is very low (" + Math.round(level)
-                        + "). Trying another chunk before cloud ASR.");
                 return;
             }
-            notifyStatus("Mic level is low (" + Math.round(level)
-                    + "), but trying cloud ASR anyway.");
-        } else {
-            quietChunks = 0;
+
+            // Still try ASR for non-zero audio
+            if (level > 0) {
+                notifyStatusThrottled("Audio very quiet (level " + Math.round(level)
+                        + "). Sending to cloud ASR...");
+                sendToAsr(pcm, level);
+            } else {
+                notifyStatusThrottled("Waiting for caller speech through the microphone...");
+            }
+            return;
         }
 
+        // Got audio!
+        quietChunks = 0;
+        sendToAsr(pcm, level);
+    }
+
+    private void sendToAsr(byte[] pcm, double level) {
         try {
             byte[] boosted = normalizeForAsr(pcm, level);
             double boostedLevel = rms(boosted);
-            notifyStatus("Sending audio to cloud ASR (level " + Math.round(level)
-                    + " -> " + Math.round(boostedLevel) + ").");
+            Log.i(TAG, "Sending to NVIDIA ASR: raw=" + Math.round(level)
+                    + " boosted=" + Math.round(boostedLevel)
+                    + " bytes=" + boosted.length);
+            notifyStatusThrottled("Sending to cloud ASR (level " + Math.round(level)
+                    + " → " + Math.round(boostedLevel) + ")...");
 
             String transcript = analyzer.transcribePcm16kMono(boosted);
             if (transcript != null && !transcript.trim().isEmpty()) {
+                successfulTranscripts++;
+                Log.i(TAG, "✅ Transcript received: " + transcript.trim());
                 notifyTranscript(transcript.trim());
+                notifyStatus("Transcribing call audio...");
+            } else {
+                Log.d(TAG, "ASR returned empty/null transcript");
             }
         } catch (Exception e) {
-            Log.w(TAG, "Cloud live chunk failed", e);
+            Log.w(TAG, "Cloud ASR chunk failed", e);
             String message = e.getMessage() != null ? e.getMessage() : "unknown ASR error";
             if (message.toLowerCase().contains("did not hear speech")
-                    || message.toLowerCase().contains("empty transcript")) {
-                notifyStatus("Still listening for clear caller speech...");
+                    || message.toLowerCase().contains("empty transcript")
+                    || message.toLowerCase().contains("did not hear clear speech")) {
+                notifyStatus("Listening for caller speech...");
             } else {
-                notifyStatus("Cloud ASR is still listening (" + message + ").");
+                Log.e(TAG, "ASR error: " + message);
+                notifyStatus("Cloud ASR error: " + message);
             }
         }
     }
@@ -287,12 +403,61 @@ public class LiveMicTranscriber {
         return Math.sqrt(sumSquares / (double) samples);
     }
 
+    public boolean canReprobe() {
+        return reprobeCount.get() < MAX_REPROBE_ATTEMPTS;
+    }
+
+    public void reprobe() {
+        if (!canReprobe()) return;
+        reprobeCount.incrementAndGet();
+        Log.i(TAG, "Re-probing audio sources (attempt " + reprobeCount.get() + "/" + MAX_REPROBE_ATTEMPTS + ")");
+        stop();
+        try {
+            Thread.sleep(800);
+        } catch (InterruptedException ignored) {}
+        running.set(false);
+        quietChunks = 0;
+        start();
+    }
+
+    private String sourceIdToName(int source) {
+        switch (source) {
+            case MediaRecorder.AudioSource.MIC: return "MIC";
+            case MediaRecorder.AudioSource.VOICE_UPLINK: return "VOICE_UPLINK";
+            case MediaRecorder.AudioSource.VOICE_DOWNLINK: return "VOICE_DOWNLINK";
+            case MediaRecorder.AudioSource.VOICE_CALL: return "VOICE_CALL";
+            case MediaRecorder.AudioSource.CAMCORDER: return "CAMCORDER";
+            case MediaRecorder.AudioSource.VOICE_RECOGNITION: return "VOICE_RECOGNITION";
+            case MediaRecorder.AudioSource.VOICE_COMMUNICATION: return "VOICE_COMMUNICATION";
+            case 9: return "UNPROCESSED"; // MediaRecorder.AudioSource.UNPROCESSED = 9
+            default: return "SOURCE_" + source;
+        }
+    }
+
     private void notifyTranscript(String text) {
         if (listener != null) listener.onTranscript(text);
     }
 
     private void notifyStatus(String status) {
-        if (listener != null) listener.onStatus(status);
+        if (listener == null || status == null || status.trim().isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        if (status.equals(lastStatus) && now - lastStatusAt < 8_000L) return;
+
+        lastStatus = status;
+        lastStatusAt = now;
+        listener.onStatus(status);
+    }
+
+    private void notifyStatusThrottled(String status) {
+        if (listener == null || status == null || status.trim().isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        if (now - lastStatusAt < 8_000L) return;
+
+        lastStatus = status;
+        lastStatusAt = now;
+        listener.onStatus(status);
     }
 
     private void notifyError(String error) {

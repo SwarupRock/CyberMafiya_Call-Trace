@@ -11,7 +11,6 @@ import android.speech.SpeechRecognizer;
 import android.util.Log;
 
 import java.util.ArrayList;
-import java.util.Locale;
 
 /**
  * ═══════════════════════════════════════════════════════════════════
@@ -21,20 +20,21 @@ import java.util.Locale;
  * Uses Android's built-in SpeechRecognizer for continuous
  * speech-to-text during active calls. Does NOT record or save audio.
  *
- * Flow:
- *   1. Start listening when call goes off-hook
- *   2. Stream partial results to UI (live transcript)
- *   3. Stream final results to ScamAnalyzerAI
- *   4. Automatically restart recognition for continuous listening
- *   5. Stop when call ends
+ * v2 — Aggressive persistence during telephony calls:
+ *   - Uses on-device recognizer (Android 13+) to bypass cloud issues
+ *   - Extends all silence thresholds so recognizer doesn't auto-stop
+ *   - Watchdog timer restarts recognizer if it silently dies
+ *   - Never gives up while shouldContinue is true
  *
  * IMPORTANT: Phone must be on speaker for mic to capture caller voice
  */
 public class SpeechToTextEngine {
 
     private static final String TAG = "SpeechToText";
-    private static final int RESTART_DELAY_MS = 700;
-    private static final long USER_VISIBLE_ERROR_INTERVAL_MS = 6000L;
+    private static final int RESTART_DELAY_MS = 500;
+    private static final int MAX_RESTART_DELAY_MS = 3000;
+    private static final long USER_VISIBLE_ERROR_INTERVAL_MS = 8000L;
+    private static final long WATCHDOG_INTERVAL_MS = 12000L;
 
     private final Context context;
     private SpeechRecognizer recognizer;
@@ -44,11 +44,19 @@ public class SpeechToTextEngine {
     private volatile boolean shouldContinue = false;
     private long lastUserVisibleErrorAt = 0L;
     private float peakRmsSinceStart = Float.NEGATIVE_INFINITY;
+    private int consecutiveErrors = 0;
+    private long lastResultTime = 0L;
+    private long startTime = 0L;
+    private boolean gotAnyResult = false;
+    private static final String SPEECH_LANGUAGE = "en-US";
 
     private TranscriptListener listener;
 
     // Full transcript accumulated during the call
     private final StringBuilder fullTranscript = new StringBuilder();
+
+    // Watchdog runnable
+    private final Runnable watchdogRunnable = this::watchdog;
 
     // ═══════════════════════════════════════════════════════════════
     // CALLBACK INTERFACE
@@ -94,9 +102,13 @@ public class SpeechToTextEngine {
 
         shouldContinue = true;
         fullTranscript.setLength(0);
+        consecutiveErrors = 0;
+        gotAnyResult = false;
+        startTime = System.currentTimeMillis();
 
         mainHandler.post(this::initAndListen);
-        Log.i(TAG, "🎙️ Speech-to-text engine STARTED");
+        startWatchdog();
+        Log.i(TAG, "Speech-to-text engine STARTED (English only)");
     }
 
     /**
@@ -106,23 +118,15 @@ public class SpeechToTextEngine {
         Log.i(TAG, "🛑 Speech-to-text engine STOPPED");
         shouldContinue = false;
         isListening = false;
+        stopWatchdog();
 
         mainHandler.post(() -> {
-            if (recognizer != null) {
-                try {
-                    recognizer.stopListening();
-                    recognizer.cancel();
-                    recognizer.destroy();
-                } catch (Exception e) {
-                    Log.w(TAG, "Error stopping recognizer", e);
-                }
-                recognizer = null;
-            }
+            destroyRecognizer();
         });
     }
 
     public boolean isListening() {
-        return isListening;
+        return isListening || shouldContinue;
     }
 
     public String getFullTranscript() {
@@ -137,44 +141,65 @@ public class SpeechToTextEngine {
         if (!shouldContinue) return;
 
         try {
-            // Create new recognizer instance
-            if (recognizer != null) {
-                try {
-                    recognizer.destroy();
-                } catch (Exception ignored) {}
-            }
+            destroyRecognizer();
 
             recognizer = SpeechRecognizer.createSpeechRecognizer(context);
+            Log.i(TAG, "Using Android speech recognizer with English (US)");
+
             recognizer.setRecognitionListener(new InternalListener());
             peakRmsSinceStart = Float.NEGATIVE_INFINITY;
 
-            // Configure recognition intent
+            // Configure recognition intent for MAXIMUM persistence
             Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-            String languageTag = Locale.getDefault().toLanguageTag();
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag);
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageTag);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, SPEECH_LANGUAGE);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, SPEECH_LANGUAGE);
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
             intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.getPackageName());
+
+            // ── KEY: Extended silence thresholds ──────────────────
+            // During calls, there can be long pauses. Don't let the
+            // recognizer stop just because there's silence.
+            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 10000);
+            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 7000);
+            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 3000);
+
+            // Use the online/system recognizer, not missing on-device packs.
             intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false);
-            // Phone-call speaker audio often arrives as short phrases with pauses.
-            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500);
-            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000);
-            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500);
+
+            // Do not force android.speech.extra.AUDIO_SOURCE here. It is not
+            // a public SpeechRecognizer contract and can make OEM recognizers
+            // bind to blocked in-call audio routes. Let Android choose its
+            // normal speech microphone path.
 
             recognizer.startListening(intent);
             isListening = true;
-            Log.d(TAG, "Recognition started");
+            Log.d(TAG, "Recognition started (attempt " + (consecutiveErrors + 1)
+                    + ", language=" + SPEECH_LANGUAGE + ")");
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to start recognition", e);
             isListening = false;
             // Retry after delay
             if (shouldContinue) {
-                mainHandler.postDelayed(this::initAndListen, 1000);
+                int delay = Math.min(1000 * (consecutiveErrors + 1), MAX_RESTART_DELAY_MS);
+                mainHandler.postDelayed(this::initAndListen, delay);
             }
+        }
+    }
+
+    private void destroyRecognizer() {
+        if (recognizer != null) {
+            try {
+                recognizer.stopListening();
+                recognizer.cancel();
+                recognizer.destroy();
+            } catch (Exception e) {
+                Log.w(TAG, "Error stopping recognizer", e);
+            }
+            recognizer = null;
         }
     }
 
@@ -183,8 +208,51 @@ public class SpeechToTextEngine {
      */
     private void restartListening() {
         if (shouldContinue) {
-            mainHandler.postDelayed(this::initAndListen, RESTART_DELAY_MS);
+            int delay = consecutiveErrors > 5
+                    ? MAX_RESTART_DELAY_MS
+                    : Math.min(RESTART_DELAY_MS * Math.max(1, consecutiveErrors), MAX_RESTART_DELAY_MS);
+            mainHandler.postDelayed(this::initAndListen, delay);
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // WATCHDOG — restart if recognizer silently dies
+    // ═══════════════════════════════════════════════════════════════
+
+    private void startWatchdog() {
+        mainHandler.removeCallbacks(watchdogRunnable);
+        mainHandler.postDelayed(watchdogRunnable, WATCHDOG_INTERVAL_MS);
+    }
+
+    private void stopWatchdog() {
+        mainHandler.removeCallbacks(watchdogRunnable);
+    }
+
+    private void watchdog() {
+        if (!shouldContinue) return;
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        long sinceLastResult = lastResultTime > 0
+                ? System.currentTimeMillis() - lastResultTime
+                : elapsed;
+
+        Log.d(TAG, "Watchdog check: isListening=" + isListening
+                + " elapsed=" + (elapsed / 1000) + "s"
+                + " sinceResult=" + (sinceLastResult / 1000) + "s"
+                + " errors=" + consecutiveErrors
+                + " gotResult=" + gotAnyResult);
+
+        // If we haven't heard anything in a while, force restart
+        if (!isListening || sinceLastResult > WATCHDOG_INTERVAL_MS * 2) {
+            Log.w(TAG, "Watchdog: recognizer appears dead, force restarting");
+            notifyUserVisibleError("Restarting speech recognition...");
+            destroyRecognizer();
+            isListening = false;
+            mainHandler.postDelayed(this::initAndListen, 500);
+        }
+
+        // Schedule next check
+        mainHandler.postDelayed(watchdogRunnable, WATCHDOG_INTERVAL_MS);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -195,12 +263,13 @@ public class SpeechToTextEngine {
 
         @Override
         public void onReadyForSpeech(Bundle params) {
-            Log.d(TAG, "Ready for speech");
+            Log.d(TAG, "✅ Ready for speech — recognizer is listening");
+            consecutiveErrors = 0; // Reset on successful start
         }
 
         @Override
         public void onBeginningOfSpeech() {
-            Log.d(TAG, "Speech started");
+            Log.d(TAG, "🗣️ Speech started — hearing audio");
         }
 
         @Override
@@ -222,54 +291,83 @@ public class SpeechToTextEngine {
         @Override
         public void onError(int error) {
             isListening = false;
+            consecutiveErrors++;
             String errorMsg;
 
             switch (error) {
                 case SpeechRecognizer.ERROR_NO_MATCH:
-                    errorMsg = peakRmsSinceStart < 1.0f
-                            ? "The recognizer is hearing silence. Use in-call speakerphone, not just full call volume."
-                            : "Audio was heard, but no words were recognized yet. Keep speakerphone on and let the caller speak clearly.";
-                    break;
+                    // This is THE most common "error" during calls — not really an error,
+                    // just means no speech was detected in this listening window.
+                    if (peakRmsSinceStart < 1.0f) {
+                        errorMsg = "Listening... Mic hears silence. Ensure in-call speakerphone is ON (not just volume up).";
+                    } else {
+                        errorMsg = "Hearing audio (level " + Math.round(peakRmsSinceStart)
+                                + ") but no clear words yet. Keep caller audible.";
+                    }
+                    // Don't count this as a real error
+                    consecutiveErrors = Math.max(0, consecutiveErrors - 1);
+                    Log.d(TAG, errorMsg);
+                    restartListening();
+                    return;
                 case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
-                    errorMsg = "Listening, but Android did not detect speech yet. Speakerphone must be audible to the mic.";
-                    break;
+                    errorMsg = "Listening for speech... (ensure speakerphone is ON)";
+                    consecutiveErrors = Math.max(0, consecutiveErrors - 1);
+                    Log.d(TAG, errorMsg);
+                    restartListening();
+                    return;
                 case SpeechRecognizer.ERROR_AUDIO:
-                    errorMsg = "Microphone audio error while listening to the speaker.";
+                    errorMsg = "Android could not open the speech microphone. Retrying...";
                     break;
                 case SpeechRecognizer.ERROR_NETWORK:
                 case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
-                    errorMsg = "Network error — using offline mode";
+                    errorMsg = "Network issue. English speech recognition needs internet or Google Speech Services.";
                     break;
                 case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
                     errorMsg = "Microphone permission required";
                     if (listener != null) listener.onError(errorMsg);
                     return; // Don't restart
-                case 10:
-                    errorMsg = "Android speech service is rate-limiting live recognition. Cloud ASR is recommended.";
+                case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+                    errorMsg = "Recognizer busy, retrying...";
                     break;
-                case 11:
-                    errorMsg = "Android speech service disconnected during the call. Cloud ASR fallback is recommended.";
+                case SpeechRecognizer.ERROR_CLIENT:
+                    errorMsg = "Recognition client error, restarting...";
+                    break;
+                case SpeechRecognizer.ERROR_SERVER:
+                    errorMsg = "English speech recognition server error, retrying...";
+                    break;
+                case 10: // ERROR_TOO_MANY_REQUESTS
+                    errorMsg = "Android speech service is throttling. Waiting before retry...";
+                    consecutiveErrors += 2; // Extra backoff
+                    break;
+                case 11: // ERROR_LANGUAGE_NOT_SUPPORTED
+                case 12: // ERROR_LANGUAGE_UNAVAILABLE
+                    errorMsg = "English speech recognition is unavailable. Install or update Google Speech Services and English (US).";
                     break;
                 default:
-                    errorMsg = "Recognition error: " + error;
+                    errorMsg = "Recognition error (" + error + "), restarting...";
                     break;
             }
 
-            Log.w(TAG, errorMsg);
+            Log.w(TAG, "Error " + error + ": " + errorMsg
+                    + " (consecutive=" + consecutiveErrors + ")");
             notifyUserVisibleError(errorMsg);
-            // Restart for continuous listening
+            // ALWAYS restart for continuous listening — never give up
             restartListening();
         }
 
         @Override
         public void onResults(Bundle results) {
             isListening = false;
+            consecutiveErrors = 0;
             ArrayList<String> matches = results.getStringArrayList(
                     SpeechRecognizer.RESULTS_RECOGNITION);
 
             if (matches != null && !matches.isEmpty()) {
                 String text = matches.get(0);
                 if (!text.isEmpty()) {
+                    gotAnyResult = true;
+                    lastResultTime = System.currentTimeMillis();
+
                     // Append to full transcript
                     if (fullTranscript.length() > 0) {
                         fullTranscript.append(" ");
@@ -295,8 +393,11 @@ public class SpeechToTextEngine {
 
             if (matches != null && !matches.isEmpty()) {
                 String partial = matches.get(0);
-                if (!partial.isEmpty() && listener != null) {
-                    listener.onPartialResult(partial);
+                if (!partial.isEmpty()) {
+                    lastResultTime = System.currentTimeMillis();
+                    if (listener != null) {
+                        listener.onPartialResult(partial);
+                    }
                 }
             }
         }

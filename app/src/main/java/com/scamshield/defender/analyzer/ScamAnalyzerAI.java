@@ -12,6 +12,7 @@ import com.google.gson.annotations.SerializedName;
 
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
+import java.io.InterruptedIOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -48,6 +49,19 @@ public class ScamAnalyzerAI {
             "https://grpc.nvcf.nvidia.com/nvidia.riva.asr.RivaSpeechRecognition/StreamingRecognize";
     private static final String NVIDIA_ASR_FUNCTION_ID = "bb0837de-8c7b-481f-9ec8-ef5663e9c1fa";
     private static final MediaType GRPC_MEDIA_TYPE = MediaType.get("application/grpc");
+    private static final int ASR_SAMPLE_RATE = 16000;
+    private static final int PCM_16BIT_BYTES = 2;
+    private static final int MAX_UPLOAD_ASR_SECONDS = 60;
+    private static final int RETRY_UPLOAD_ASR_SECONDS = 25;
+    private static final String[] INSTANT_ALERT_PHRASES = {
+            "otp", "one time password", "cvv", "upi pin", "pin number", "password",
+            "bank", "bank account", "account number", "card number", "credit card",
+            "debit card", "aadhaar", "aadhar", "pan card", "kyc",
+            "remote access", "anydesk", "teamviewer", "share screen",
+            "transfer money", "send money", "pay now", "payment link",
+            "police", "arrest", "warrant", "digital arrest", "legal action",
+            "lottery", "prize", "refund"
+    };
 
     private static final Map<String, String[]> SCAM_KEYWORDS = new HashMap<>();
 
@@ -111,9 +125,10 @@ public class ScamAnalyzerAI {
     private final ExecutorService cloudExecutor = Executors.newSingleThreadExecutor();
     private final Gson gson = new Gson();
     private final OkHttpClient rivaClient = new OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(90, TimeUnit.SECONDS)
-            .writeTimeout(90, TimeUnit.SECONDS)
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(180, TimeUnit.SECONDS)
+            .writeTimeout(180, TimeUnit.SECONDS)
+            .callTimeout(210, TimeUnit.SECONDS)
             .build();
     private final List<String> detectedKeywords = new ArrayList<>();
 
@@ -176,16 +191,23 @@ public class ScamAnalyzerAI {
 
         float keywordScore = runKeywordAnalysis(textChunk);
         float patternScore = runPatternAnalysis(fullTranscript);
+        boolean instantAlert = containsInstantAlertPhrase(textChunk)
+                || containsInstantAlertPhrase(fullTranscript);
         float combinedLocal = (keywordScore * 0.6f) + (patternScore * 0.4f);
+        if (instantAlert) {
+            combinedLocal = Math.max(combinedLocal, LOCAL_ALERT_THRESHOLD);
+        }
         currentScore = Math.max(currentScore, combinedLocal);
 
         AnalysisResult result = new AnalysisResult();
         result.confidence = currentScore;
-        result.isScam = currentScore >= LOCAL_ALERT_THRESHOLD;
+        result.isScam = instantAlert || currentScore >= LOCAL_ALERT_THRESHOLD;
         result.threatType = threatCategory;
         result.keywordsFound = new ArrayList<>(detectedKeywords);
         result.fromCloud = false;
-        result.reasoning = detectedKeywords.isEmpty()
+        result.reasoning = instantAlert
+                ? "Instant scam keyword heard during the call."
+                : detectedKeywords.isEmpty()
                 ? "No scam indicators detected"
                 : "Detected " + detectedKeywords.size() + " scam indicators in " + threatCategory;
 
@@ -220,9 +242,11 @@ public class ScamAnalyzerAI {
         if (scamListener == null) return;
 
         scamListener.onAnalysisUpdate(result);
-        if (currentScore >= SCAM_CONFIRMED_THRESHOLD) {
+        if (!result.isScam) return;
+
+        if (result.confidence >= SCAM_CONFIRMED_THRESHOLD) {
             scamListener.onScamConfirmed(result);
-        } else if (currentScore >= LOCAL_ALERT_THRESHOLD) {
+        } else if (result.confidence >= LOCAL_ALERT_THRESHOLD) {
             scamListener.onScamAlert(result);
         }
     }
@@ -251,6 +275,48 @@ public class ScamAnalyzerAI {
         }
 
         return Math.min(score, 1.0f);
+    }
+
+    private boolean containsInstantAlertPhrase(String text) {
+        if (text == null || text.trim().isEmpty()) return false;
+        String lower = text.toLowerCase();
+        for (String phrase : INSTANT_ALERT_PHRASES) {
+            if (lower.contains(phrase)) {
+                if (!detectedKeywords.contains(phrase)) {
+                    detectedKeywords.add(phrase);
+                }
+                threatCategory = inferThreatCategory(phrase);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String inferThreatCategory(String phrase) {
+        if (phrase == null) return "high_risk_keyword";
+        String lower = phrase.toLowerCase();
+        if (lower.contains("otp") || lower.contains("cvv") || lower.contains("upi")
+                || lower.contains("bank") || lower.contains("account")
+                || lower.contains("card") || lower.contains("payment")
+                || lower.contains("money") || lower.contains("refund")) {
+            return "banking";
+        }
+        if (lower.contains("kyc") || lower.contains("aadhaar") || lower.contains("aadhar")
+                || lower.contains("pan")) {
+            return "kyc";
+        }
+        if (lower.contains("police") || lower.contains("arrest")
+                || lower.contains("warrant") || lower.contains("legal")) {
+            return "authority";
+        }
+        if (lower.contains("anydesk") || lower.contains("teamviewer")
+                || lower.contains("remote") || lower.contains("screen")) {
+            return "tech_support";
+        }
+        if (lower.contains("lottery") || lower.contains("prize")) {
+            return "lottery";
+        }
+        return "high_risk_keyword";
     }
 
     private float getKeywordWeight(String category) {
@@ -587,7 +653,7 @@ public class ScamAnalyzerAI {
                 callback.onAnalysisComplete(result, cleanedTranscript);
             } catch (Exception e) {
                 Log.e(TAG, "NVIDIA audio analysis failed", e);
-                callback.onError("NVIDIA audio analysis failed: " + e.getMessage());
+                callback.onError(friendlyAudioError(e));
             }
         });
     }
@@ -609,7 +675,16 @@ public class ScamAnalyzerAI {
 
     private String transcribeAudioWithNvidia(String apiKey, byte[] audioData, String mimeType) throws Exception {
         AudioPcmConverter.PcmAudio pcm = AudioPcmConverter.toMono16k(appContext, audioData, mimeType);
-        return transcribePcm16kMono(apiKey, pcm.pcm16le);
+        byte[] uploadWindow = trimPcmSeconds(pcm.pcm16le, MAX_UPLOAD_ASR_SECONDS);
+        try {
+            return transcribePcm16kMono(apiKey, uploadWindow);
+        } catch (Exception first) {
+            if (!isTimeout(first) || uploadWindow.length <= secondsToPcmBytes(RETRY_UPLOAD_ASR_SECONDS)) {
+                throw first;
+            }
+            Log.w(TAG, "NVIDIA ASR timed out; retrying with shorter audio window", first);
+            return transcribePcm16kMono(apiKey, trimPcmSeconds(pcm.pcm16le, RETRY_UPLOAD_ASR_SECONDS));
+        }
     }
 
     private String transcribePcm16kMono(String apiKey, byte[] pcm16le) throws Exception {
@@ -642,6 +717,47 @@ public class ScamAnalyzerAI {
             }
             return transcript;
         }
+    }
+
+    private byte[] trimPcmSeconds(byte[] pcm16le, int seconds) {
+        int maxBytes = secondsToPcmBytes(seconds);
+        if (pcm16le == null || pcm16le.length <= maxBytes) {
+            return pcm16le != null ? pcm16le : new byte[0];
+        }
+        byte[] trimmed = new byte[maxBytes];
+        System.arraycopy(pcm16le, 0, trimmed, 0, maxBytes);
+        return trimmed;
+    }
+
+    private int secondsToPcmBytes(int seconds) {
+        return ASR_SAMPLE_RATE * PCM_16BIT_BYTES * Math.max(1, seconds);
+    }
+
+    private boolean isTimeout(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof java.net.SocketTimeoutException
+                    || current instanceof InterruptedIOException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null && message.toLowerCase().contains("timeout")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private String friendlyAudioError(Exception e) {
+        if (isTimeout(e)) {
+            return "Audio transcription timed out. I retried with a shorter clip, but NVIDIA ASR still did not respond. Try a shorter, clearer audio file under 30 seconds.";
+        }
+        String message = e.getMessage();
+        if (message == null || message.trim().isEmpty()) {
+            return "Audio analysis failed. Try a clear MP3, M4A, or WAV file.";
+        }
+        return "Audio analysis failed: " + message;
     }
 
     private byte[] buildStreamingGrpcBody(byte[] pcm16le) {

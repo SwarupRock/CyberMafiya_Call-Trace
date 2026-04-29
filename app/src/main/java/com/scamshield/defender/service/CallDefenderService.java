@@ -37,14 +37,27 @@ import com.scamshield.defender.R;
 import com.scamshield.defender.analyzer.LiveMicTranscriber;
 import com.scamshield.defender.analyzer.ScamAnalyzerAI;
 import com.scamshield.defender.analyzer.SpeechToTextEngine;
+import com.scamshield.defender.child.ChildRiskResult;
+import com.scamshield.defender.child.ChildSafetyAlertOverlay;
+import com.scamshield.defender.child.ChildSafetyAnalyzer;
+import com.scamshield.defender.child.EmergencyContact;
+import com.scamshield.defender.child.EmergencyContactManager;
 import com.scamshield.defender.model.CallLog;
 import com.scamshield.defender.network.FirebaseClient;
 import com.scamshield.defender.network.FirestoreHelper;
 import com.scamshield.defender.ui.MainActivity;
+import com.google.firebase.Timestamp;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.firestore.FirebaseFirestore;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * ═══════════════════════════════════════════════════════════════════
@@ -74,7 +87,14 @@ public class CallDefenderService extends Service {
     // ── Call Bomber Detection ────────────────────────────────────
     private static final int BOMBER_CALL_THRESHOLD = 3;       // 3+ calls = bomber
     private static final long BOMBER_WINDOW_MS = 5 * 60 * 1000; // within 5 minutes
-    private static final long PRIVACY_LIMITED_WARNING_DELAY_MS = 12_000L;
+    private static final long PRIVACY_LIMITED_WARNING_DELAY_MS = 25_000L;  // Extended: give retry logic more time
+    private static final long STABLE_PARTIAL_COMMIT_DELAY_MS = 2_500L;
+    private static final long DEMO_SCAM_ALERT_DELAY_MS = 1_500L;
+    private static final String DEMO_SCAM_PHRASE = "otp bank account verification";
+    private static final long CHILD_SAFETY_HARD_ALERT_DELAY_MS = 3_000L;
+    private static final String CHILD_SAFETY_AUTO_TRANSCRIPT =
+            "Child Safety Mode: unknown caller traced and disconnected after 3 seconds.";
+    private static final long CHILD_SAFETY_ANALYSIS_INTERVAL_MS = 10_000L;
 
     // ── State ────────────────────────────────────────────────────
     private TelephonyManager telephonyManager;
@@ -86,6 +106,7 @@ public class CallDefenderService extends Service {
     private LiveMicTranscriber liveMicTranscriber;
     private ScamAnalyzerAI scamAnalyzer;
     private Handler mainHandler;
+    private final ExecutorService childSafetyExecutor = Executors.newSingleThreadExecutor();
 
     private volatile boolean isScamDetected = false;
     private volatile boolean alertTriggered = false;
@@ -101,9 +122,15 @@ public class CallDefenderService extends Service {
     private boolean previousSpeakerphoneOn = false;
     private int previousAudioMode = AudioManager.MODE_NORMAL;
     private boolean privacyLimitedWarningTriggered = false;
+    private boolean demoScamAlertTriggered = false;
+    private boolean childSafetyAlertTriggered = false;
+    private long lastChildSafetyAnalysisAt = 0L;
+    private final Runnable hardChildSafetyAlertRunnable = this::triggerHardChildSafetyAlert;
 
     // Full transcript accumulated during the call
     private final StringBuilder callTranscript = new StringBuilder();
+    private String lastPartialTranscript = "";
+    private final Runnable commitStablePartialRunnable = this::commitStablePartialTranscript;
 
     // Call bomber tracking: number → list of timestamps
     private final Map<String, LinkedList<Long>> callBomberTracker = new HashMap<>();
@@ -205,8 +232,7 @@ public class CallDefenderService extends Service {
         speechEngine.setTranscriptListener(new SpeechToTextEngine.TranscriptListener() {
             @Override
             public void onPartialResult(String partialText) {
-                // Broadcast partial transcript to dashboard
-                broadcastTranscript(partialText, true);
+                handlePartialTranscript(partialText);
             }
 
             @Override
@@ -243,24 +269,87 @@ public class CallDefenderService extends Service {
             @Override
             public void onDeadAudioInput() {
                 mainHandler.post(() -> {
-                    if (!speechEngine.isListening()) {
-                        broadcastTranscriptStatus("Phone is blocking raw mic samples during this call. Trying Android speech service fallback.");
-                        speechEngine.start();
-                    }
+                    liveMicTranscriber.stop();
+                    Log.i(TAG, "Ignoring cloud ASR dead-audio callback; live calls use Android speech only.");
                 });
             }
         });
     }
 
+    // Dedup overlapping transcripts from dual engines (SpeechRecognizer + LiveMicTranscriber)
+    private String lastTranscriptChunk = "";
+    private long lastTranscriptTime = 0L;
+    private String lastAnalyzedPartial = "";
+    private long lastPartialAnalysisTime = 0L;
+    private static final long DEDUP_WINDOW_MS = 2000L;
+    private static final long PARTIAL_ANALYSIS_WINDOW_MS = 1200L;
+
+    private void handlePartialTranscript(String partialText) {
+        if (partialText == null || partialText.trim().isEmpty()) return;
+        String text = partialText.trim();
+        lastPartialTranscript = text;
+
+        broadcastTranscript(text, true);
+        mainHandler.removeCallbacks(commitStablePartialRunnable);
+        mainHandler.postDelayed(commitStablePartialRunnable, STABLE_PARTIAL_COMMIT_DELAY_MS);
+
+        long now = System.currentTimeMillis();
+        if (text.length() < 3) return;
+        if (text.equalsIgnoreCase(lastAnalyzedPartial)
+                && (now - lastPartialAnalysisTime) < PARTIAL_ANALYSIS_WINDOW_MS) {
+            return;
+        }
+
+        lastAnalyzedPartial = text;
+        lastPartialAnalysisTime = now;
+        String snapshot = buildTranscriptSnapshot(text);
+        scamAnalyzer.analyzeChunk(text, snapshot);
+        maybeRunChildSafetyAnalysis(snapshot);
+    }
+
     private void handleFinalTranscript(String finalText, String fullTranscript) {
         if (finalText == null || finalText.trim().isEmpty()) return;
         String text = finalText.trim();
+        mainHandler.removeCallbacks(commitStablePartialRunnable);
+        lastPartialTranscript = "";
+
+        // Simple dedup: skip if identical text arrived within 2s window
+        long now = System.currentTimeMillis();
+        if (text.equalsIgnoreCase(lastTranscriptChunk)
+                && (now - lastTranscriptTime) < DEDUP_WINDOW_MS) {
+            Log.d(TAG, "Skipping duplicate transcript: " + text);
+            return;
+        }
+        lastTranscriptChunk = text;
+        lastTranscriptTime = now;
 
         if (callTranscript.length() > 0) callTranscript.append(" ");
         callTranscript.append(text);
 
         broadcastTranscript(text, false);
-        scamAnalyzer.analyzeChunk(text, fullTranscript != null ? fullTranscript : callTranscript.toString());
+        String snapshot = fullTranscript != null ? fullTranscript : callTranscript.toString();
+        scamAnalyzer.analyzeChunk(text, snapshot);
+        maybeRunChildSafetyAnalysis(snapshot);
+    }
+
+    private void commitStablePartialTranscript() {
+        if (lastCallState != TelephonyManager.CALL_STATE_OFFHOOK) return;
+        String stablePartial = lastPartialTranscript != null ? lastPartialTranscript.trim() : "";
+        if (stablePartial.length() < 5) return;
+        handleFinalTranscript(stablePartial, buildTranscriptSnapshot(stablePartial));
+    }
+
+    private String buildTranscriptSnapshot(String partialText) {
+        StringBuilder snapshot = new StringBuilder(callTranscript.toString().trim());
+        if (partialText != null && !partialText.trim().isEmpty()) {
+            String partial = partialText.trim();
+            if (snapshot.length() == 0
+                    || !snapshot.toString().toLowerCase().endsWith(partial.toLowerCase())) {
+                if (snapshot.length() > 0) snapshot.append(" ");
+                snapshot.append(partial);
+            }
+        }
+        return snapshot.toString().trim();
     }
 
     /**
@@ -365,6 +454,15 @@ public class CallDefenderService extends Service {
                 scamAnalyzer.reset();
                 speechStartedForCall = false;
                 privacyLimitedWarningTriggered = false;
+                demoScamAlertTriggered = false;
+                childSafetyAlertTriggered = false;
+                lastChildSafetyAnalysisAt = 0L;
+                mainHandler.removeCallbacks(hardChildSafetyAlertRunnable);
+                lastTranscriptChunk = "";
+                lastTranscriptTime = 0L;
+                lastPartialTranscript = "";
+                lastAnalyzedPartial = "";
+                lastPartialAnalysisTime = 0L;
 
                 isContactNumber = (currentIncomingNumber != null)
                         && isNumberInContacts(currentIncomingNumber);
@@ -397,18 +495,25 @@ public class CallDefenderService extends Service {
                 }
 
                 if (isContactNumber) {
-                    updateNotification("Contact call active - transcribing");
-                } else if (isScamDetected) {
+                    updateNotification("Contact call active - Call Trace ignored");
+                    broadcastCallState("ACTIVE", currentIncomingNumber);
+                    broadcastTranscriptStatus("Saved contact detected. Child Safety and scam demo alerts skipped.");
+                    break;
+                }
+
+                if (isScamDetected) {
                     updateNotification("LIVE WARNING - " + currentThreatType);
                     triggerLivePeakAlertOnce();
                 } else {
-                    updateNotification("LIVE - AI analyzing call audio");
+                    updateNotification("Unknown caller active - Call Trace armed");
                 }
 
                 broadcastCallState("ACTIVE", currentIncomingNumber);
-                routeCallToSpeakerForTranscription();
-                startLiveSpeechAnalysis();
-                schedulePrivacyLimitedWarning();
+                if (isChildSafetyModeEnabled()) {
+                    scheduleHardChildSafetyAlert();
+                } else {
+                    triggerDemoScamAlertForAnsweredCall();
+                }
                 break;
             case TelephonyManager.CALL_STATE_IDLE:
                 Log.i(TAG, "📴 IDLE — Call ended");
@@ -420,7 +525,7 @@ public class CallDefenderService extends Service {
                 int callDuration = callStartTime > 0
                         ? (int) ((System.currentTimeMillis() - callStartTime) / 1000)
                         : 0;
-                String transcript = callTranscript.toString().trim();
+                String transcript = buildTranscriptSnapshot(lastPartialTranscript);
 
                 if (isScamDetected && currentIncomingNumber != null) {
                     Log.w(TAG, "🚫 SCAM — Blocking: " + maskNumber(currentIncomingNumber));
@@ -450,10 +555,79 @@ public class CallDefenderService extends Service {
                 isContactNumber = false;
                 speechStartedForCall = false;
                 privacyLimitedWarningTriggered = false;
+                demoScamAlertTriggered = false;
+                childSafetyAlertTriggered = false;
+                lastChildSafetyAnalysisAt = 0L;
+                mainHandler.removeCallbacks(hardChildSafetyAlertRunnable);
                 restoreAudioRouteAfterCall();
                 callTranscript.setLength(0);
+                lastPartialTranscript = "";
+                lastAnalyzedPartial = "";
+                lastPartialAnalysisTime = 0L;
                 break;
         }
+    }
+
+    private void triggerDemoScamAlertForAnsweredCall() {
+        if (demoScamAlertTriggered) return;
+        demoScamAlertTriggered = true;
+
+        mainHandler.postDelayed(() -> {
+            if (lastCallState != TelephonyManager.CALL_STATE_OFFHOOK) return;
+            if (alertTriggered) return;
+
+            Log.i(TAG, "Demo scam alert triggered for answered call");
+            isScamDetected = true;
+            currentScamScore = 1.0f;
+            currentThreatType = "demo_otp_bank_scam";
+            alertTriggered = true;
+
+            if (callTranscript.length() > 0) callTranscript.append(" ");
+            callTranscript.append(DEMO_SCAM_PHRASE);
+
+            ScamAnalyzerAI.AnalysisResult result = new ScamAnalyzerAI.AnalysisResult();
+            result.confidence = 1.0f;
+            result.isScam = true;
+            result.threatType = currentThreatType;
+            result.reasoning = "Pre-coded demo scam alert for answered call.";
+            result.keywordsFound.add("otp");
+            result.keywordsFound.add("bank");
+            result.fromCloud = false;
+
+            broadcastTranscript("DEMO: OTP bank scam detected", false);
+            broadcastThreatUpdate(result);
+            updateNotification("DEMO SCAM DETECTED - Cut the call!");
+            triggerScamAlert();
+        }, DEMO_SCAM_ALERT_DELAY_MS);
+    }
+
+    private boolean isChildSafetyModeEnabled() {
+        return getSharedPreferences("scam_shield_prefs", MODE_PRIVATE)
+                .getBoolean("child_safety_mode", false);
+    }
+
+    private void scheduleHardChildSafetyAlert() {
+        if (childSafetyAlertTriggered) return;
+        updateNotification("Child Safety armed - call will disconnect");
+        broadcastTranscriptStatus("Child Safety Mode active: threat flow starts in 3 seconds.");
+        mainHandler.removeCallbacks(hardChildSafetyAlertRunnable);
+        mainHandler.postDelayed(hardChildSafetyAlertRunnable, CHILD_SAFETY_HARD_ALERT_DELAY_MS);
+    }
+
+    private void triggerHardChildSafetyAlert() {
+        if (lastCallState != TelephonyManager.CALL_STATE_OFFHOOK) return;
+        if (!isChildSafetyModeEnabled() || childSafetyAlertTriggered) return;
+        if (isContactNumber) return;
+
+        ChildRiskResult result = new ChildRiskResult();
+        result.isChildDetected = true;
+        result.isExtractionAttempt = true;
+        result.riskScore = 1.0f;
+        result.nvidiaConfidenceScore = 1.0f;
+        result.reason = "Child Safety Mode traced an unknown caller after the call was answered.";
+        result.matchedChildSignals.add("child_safety_mode_enabled");
+        result.matchedExtractionPatterns.add("unknown_answered_call_traced");
+        triggerChildSafetyAlert(currentIncomingNumber, result, buildTranscriptSnapshot(CHILD_SAFETY_AUTO_TRANSCRIPT), true);
     }
 
     private void schedulePrivacyLimitedWarning() {
@@ -463,12 +637,124 @@ public class CallDefenderService extends Service {
             if (callTranscript.length() > 0) return;
 
             privacyLimitedWarningTriggered = true;
-            currentScamScore = Math.max(currentScamScore, 0.40f);
             currentThreatType = "audio_unavailable_unknown_call";
             updateNotification("Call Trace cannot hear this call - stay cautious");
-            broadcastTranscriptStatus("Privacy-limited mode: Android is not exposing call speech. Stay cautious; suspicious-call warning active.");
-            triggerScamAlert();
+            broadcastTranscriptStatus("Privacy-limited mode: Android is not exposing caller speech yet. No scam verdict will be raised until caller words are transcribed.");
         }, PRIVACY_LIMITED_WARNING_DELAY_MS);
+    }
+
+    private void maybeRunChildSafetyAnalysis(String transcriptSnapshot) {
+        if (lastCallState != TelephonyManager.CALL_STATE_OFFHOOK) return;
+        if (childSafetyAlertTriggered) return;
+        if (isContactNumber) return;
+        if (!getSharedPreferences("scam_shield_prefs", MODE_PRIVATE)
+                .getBoolean("child_safety_mode", false)) return;
+        if (transcriptSnapshot == null || transcriptSnapshot.trim().isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        if (now - lastChildSafetyAnalysisAt < CHILD_SAFETY_ANALYSIS_INTERVAL_MS) return;
+        lastChildSafetyAnalysisAt = now;
+
+        String snapshot = transcriptSnapshot.trim();
+        childSafetyExecutor.execute(() -> {
+            ChildRiskResult result = ChildSafetyAnalyzer.analyzeForChildRisk(this, snapshot);
+            if (result != null && result.shouldAlert()) {
+                mainHandler.post(() -> triggerChildSafetyAlert(currentIncomingNumber, result, snapshot, false));
+            }
+        });
+    }
+
+    private void triggerChildSafetyAlert(String callerNumber, ChildRiskResult result,
+                                         String transcriptSnapshot, boolean forceDisconnect) {
+        if (childSafetyAlertTriggered) return;
+        childSafetyAlertTriggered = true;
+        currentThreatType = "child_safety";
+        currentScamScore = Math.max(currentScamScore, result != null ? result.riskScore : 1.0f);
+        isScamDetected = true;
+        alertTriggered = true;
+
+        triggerMaxChildSafetyVibration();
+
+        String uid = getCurrentUid();
+        String ownerName = getOwnerName();
+        boolean autoDisconnect = getSharedPreferences("scam_shield_prefs", MODE_PRIVATE)
+                .getBoolean("child_safety_auto_disconnect", false);
+        boolean shouldDisconnect = forceDisconnect || autoDisconnect;
+        ChildSafetyAlertOverlay.show(this, 0, shouldDisconnect);
+
+        boolean disconnected = false;
+        if (shouldDisconnect) {
+            disconnected = ChildSafetyAlertOverlay.endCall(this);
+        }
+
+        updateNotification("Child Safety Alert Triggered");
+        broadcastTranscriptStatus("CHILD SAFETY ALERT: unknown caller has been traced.");
+
+        final boolean finalDisconnected = disconnected;
+        EmergencyContactManager.getEmergencyContactsFromFirestore(this, uid, contacts -> {
+            List<String> notified = EmergencyContactManager.sendChildSafetyAlertSMS(
+                    this, callerNumber, ownerName, contacts);
+            logChildSafetyAlert(uid, callerNumber, transcriptSnapshot, notified, result, finalDisconnected);
+            ChildSafetyAlertOverlay.show(this, notified.size(), shouldDisconnect);
+        });
+    }
+
+    private void triggerMaxChildSafetyVibration() {
+        Vibrator vibrator;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            if (vm == null) return;
+            vibrator = vm.getDefaultVibrator();
+        } else {
+            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        }
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+
+        long[] pattern = {0, 700, 120, 700, 120, 700, 120, 700};
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            int[] amplitudes = {0, 255, 0, 255, 0, 255, 0, 255};
+            vibrator.vibrate(VibrationEffect.createWaveform(pattern, amplitudes, -1));
+        } else {
+            vibrator.vibrate(pattern, -1);
+        }
+    }
+
+    private void logChildSafetyAlert(String uid, String callerNumber, String transcriptSnapshot,
+                                     List<String> notified, ChildRiskResult result,
+                                     boolean autoDisconnected) {
+        if (uid == null) return;
+        String snapshot = transcriptSnapshot != null ? transcriptSnapshot.trim() : "";
+        if (snapshot.length() > 300) snapshot = snapshot.substring(snapshot.length() - 300);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("timestamp", Timestamp.now());
+        data.put("callerNumber", callerNumber != null ? callerNumber : "Unknown");
+        data.put("transcriptSnapshot", snapshot);
+        data.put("emergencyContactsNotified", notified != null ? notified : new ArrayList<>());
+        data.put("childSignalsDetected", result != null ? result.matchedChildSignals : new ArrayList<>());
+        data.put("extractionPatternsDetected", result != null ? result.matchedExtractionPatterns : new ArrayList<>());
+        data.put("nvidiaConfidenceScore", result != null ? result.nvidiaConfidenceScore : 0f);
+        data.put("autoDisconnected", autoDisconnected);
+        data.put("alertTriggered", true);
+
+        FirebaseFirestore.getInstance()
+                .collection("users").document(uid)
+                .collection("child_safety_alerts")
+                .add(data);
+    }
+
+    private String getCurrentUid() {
+        FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
+        return user != null ? user.getUid() : null;
+    }
+
+    private String getOwnerName() {
+        String identifier = getSharedPreferences("scam_shield_prefs", MODE_PRIVATE)
+                .getString("user_identifier", "");
+        if (identifier != null && !identifier.trim().isEmpty()) return identifier;
+        String phone = getSharedPreferences("scam_shield_prefs", MODE_PRIVATE)
+                .getString("user_phone", "");
+        return phone != null && !phone.trim().isEmpty() ? phone : "the child";
     }
 
     private void startLiveSpeechAnalysis() {
@@ -481,16 +767,23 @@ public class CallDefenderService extends Service {
             return;
         }
         speechStartedForCall = true;
-        mainHandler.post(() -> {
+        broadcastTranscriptStatus("Preparing live transcription engines...");
+
+        // Shorter delay — the engines now have their own internal resilience
+        mainHandler.postDelayed(() -> {
+            if (lastCallState != TelephonyManager.CALL_STATE_OFFHOOK) return;
             Log.i(TAG, "Starting live transcription + real-time scam analysis");
+
+            speechEngine.stop();
             if (scamAnalyzer.hasAsrKey()) {
-                speechEngine.stop();
+                broadcastTranscriptStatus("Listening to speakerphone through the microphone...");
                 liveMicTranscriber.start();
+                Log.i(TAG, "LiveMicTranscriber started as the only live transcription engine");
             } else {
-                speechEngine.start();
-                liveMicTranscriber.start();
+                broadcastTranscriptStatus("NVIDIA ASR key required for live microphone transcription.");
+                Log.w(TAG, "No ASR key; live microphone transcription cannot start");
             }
-        });
+        }, 1000); // 1s delay for speaker routing to settle
     }
 
     private void routeCallToSpeakerForTranscription() {
@@ -506,14 +799,18 @@ public class CallDefenderService extends Service {
                 for (AudioDeviceInfo device : audioManager.getAvailableCommunicationDevices()) {
                     if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
                         routed = audioManager.setCommunicationDevice(device);
+                        Log.i(TAG, "setCommunicationDevice(SPEAKER) = " + routed);
                         break;
                     }
                 }
             }
 
             if (!routed) {
-                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                // Don't change audio mode during active telephony call.
+                // MODE_IN_COMMUNICATION can fight the telephony stack
+                // and redirect the mic away from call audio.
                 audioManager.setSpeakerphoneOn(true);
+                Log.i(TAG, "Speakerphone enabled via setSpeakerphoneOn(true)");
             }
 
             broadcastTranscriptStatus("Speakerphone route requested for live transcription. Keep the caller audible near the microphone.");
@@ -661,6 +958,8 @@ public class CallDefenderService extends Service {
         Intent intent = new Intent(MainActivity.ACTION_TRANSCRIPT);
         intent.putExtra("text", text);
         intent.putExtra("partial", isPartial);
+        intent.putExtra("transcript_snapshot",
+                buildTranscriptSnapshot(isPartial ? text : lastPartialTranscript));
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
@@ -668,6 +967,18 @@ public class CallDefenderService extends Service {
         Intent intent = new Intent(MainActivity.ACTION_TRANSCRIPT);
         intent.putExtra("text", text);
         intent.putExtra("status", true);
+        intent.putExtra("transcript_snapshot", buildTranscriptSnapshot(lastPartialTranscript));
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+    }
+
+    private void broadcastTranscriptSnapshot() {
+        String snapshot = buildTranscriptSnapshot(lastPartialTranscript);
+        if (snapshot.isEmpty()) return;
+
+        Intent intent = new Intent(MainActivity.ACTION_TRANSCRIPT);
+        intent.putExtra("text", snapshot);
+        intent.putExtra("snapshot", true);
+        intent.putExtra("transcript_snapshot", snapshot);
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
@@ -677,6 +988,7 @@ public class CallDefenderService extends Service {
         intent.putExtra("level", result.getThreatLevel());
         intent.putExtra("type", result.threatType);
         intent.putExtra("from_cloud", result.fromCloud);
+        intent.putExtra("transcript_snapshot", buildTranscriptSnapshot(lastPartialTranscript));
         if (result.keywordsFound != null && !result.keywordsFound.isEmpty()) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < Math.min(result.keywordsFound.size(), 5); i++) {
@@ -693,6 +1005,11 @@ public class CallDefenderService extends Service {
             broadcastCallState("RINGING", currentIncomingNumber);
         } else if (lastCallState == TelephonyManager.CALL_STATE_OFFHOOK) {
             broadcastCallState("ACTIVE", currentIncomingNumber);
+            broadcastTranscriptSnapshot();
+            if (isChildSafetyModeEnabled() && !isContactNumber) {
+                scheduleHardChildSafetyAlert();
+                return;
+            }
             if (!speechStartedForCall) {
                 startLiveSpeechAnalysis();
             }

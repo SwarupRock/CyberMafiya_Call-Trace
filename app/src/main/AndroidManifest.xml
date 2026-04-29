@@ -14,10 +14,17 @@
     <!-- SMS: detect scam and OTP messages for quarantine view -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
     <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
 
     <!-- Audio recording: capture mic for real-time scam analysis -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Telephony audio capture: needed for VOICE_CALL/VOICE_DOWNLINK sources.
+         This is a protected permission, but many OEMs (Xiaomi, Samsung, Realme, OnePlus)
+         grant it to apps with RECORD_AUDIO. Without it, the mic is zeroed during calls. -->
+    <uses-permission android:name="android.permission.CAPTURE_AUDIO_OUTPUT"
+        tools:ignore="ProtectedPermissions" />
 
     <!-- Vibration: double-buzz alert when scam is detected -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -27,6 +34,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <!-- Post notifications (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -94,6 +103,11 @@
         <!-- ── Call History Activity ──────────────────────── -->
         <activity
             android:name=".ui.CallHistoryActivity"
+            android:exported="false"
+            android:theme="@style/Theme.CallTrace" />
+
+        <activity
+            android:name=".ui.ChildSafetySettingsActivity"
             android:exported="false"
             android:theme="@style/Theme.CallTrace" />
 

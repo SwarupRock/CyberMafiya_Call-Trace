@@ -128,17 +128,21 @@ public class FirestoreHelper {
                 .addOnSuccessListener(querySnapshot -> {
                     List<CallLog> logs = new ArrayList<>();
                     for (DocumentSnapshot doc : querySnapshot) {
-                        Map<String, Object> data = doc.getData();
-                        if (data != null) {
-                            logs.add(CallLog.fromMap(doc.getId(), data));
+                        try {
+                            Map<String, Object> data = doc.getData();
+                            if (data != null) {
+                                logs.add(CallLog.fromMap(doc.getId(), data));
+                            }
+                        } catch (Exception e) {
+                            Log.w(TAG, "Skipping malformed call history doc: " + doc.getId(), e);
                         }
                     }
                     Log.i(TAG, "📋 Fetched " + logs.size() + " call logs");
-                    callback.onSuccess(logs);
+                    if (callback != null) callback.onSuccess(logs);
                 })
                 .addOnFailureListener(e -> {
                     Log.e(TAG, "❌ Fetch call history failed", e);
-                    callback.onError(e.getMessage());
+                    if (callback != null) callback.onError(e.getMessage());
                 });
     }
 

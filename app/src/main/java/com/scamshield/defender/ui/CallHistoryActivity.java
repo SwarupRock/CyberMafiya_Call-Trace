@@ -44,6 +44,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import android.provider.MediaStore;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -77,22 +78,26 @@ public class CallHistoryActivity extends AppCompatActivity {
     private LinearLayout layoutEmpty;
     private ProgressBar progressLoading;
     private TextView tvTotalCount, tvStatTotal, tvStatScam, tvStatBlocked;
-    private Button btnFilterAll, btnFilterScam, btnFilterBlocked;
+    private Button btnFilterAll, btnFilterScam, btnFilterBlocked, btnFilterChildSafety;
     private Button btnBack;
     private final Gson gson = new Gson();
 
     private List<CallLog> allLogs;
-    private String currentFilter = "all"; // "all", "scam", "blocked"
+    private String currentFilter = "all"; // "all", "scam", "blocked", "child_safety"
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_call_history);
-
-        bindViews();
-        setupListeners();
-        updateFilterButtons();
-        loadCallHistory();
+        try {
+            setContentView(R.layout.activity_call_history);
+            bindViews();
+            setupListeners();
+            updateFilterButtons();
+            loadCallHistory();
+        } catch (Exception e) {
+            Log.e(TAG, "Call history screen failed to open", e);
+            showHistoryErrorView("Call History could not open. " + safeError(e.getMessage()));
+        }
     }
 
     private void bindViews() {
@@ -106,6 +111,7 @@ public class CallHistoryActivity extends AppCompatActivity {
         btnFilterAll = findViewById(R.id.btn_filter_all);
         btnFilterScam = findViewById(R.id.btn_filter_scam);
         btnFilterBlocked = findViewById(R.id.btn_filter_blocked);
+        btnFilterChildSafety = findViewById(R.id.btn_filter_child_safety);
         btnBack = findViewById(R.id.btn_back);
     }
 
@@ -126,6 +132,12 @@ public class CallHistoryActivity extends AppCompatActivity {
 
         btnFilterBlocked.setOnClickListener(v -> {
             currentFilter = "blocked";
+            updateFilterButtons();
+            renderEntries();
+        });
+
+        btnFilterChildSafety.setOnClickListener(v -> {
+            currentFilter = "child_safety";
             updateFilterButtons();
             renderEntries();
         });
@@ -158,6 +170,14 @@ public class CallHistoryActivity extends AppCompatActivity {
             btnFilterBlocked.setBackgroundResource(R.drawable.menu_button_cyan);
             btnFilterBlocked.setTextColor(getColor(R.color.neon_amber));
         }
+
+        if (currentFilter.equals("child_safety")) {
+            btnFilterChildSafety.setBackgroundResource(R.drawable.filter_active_red);
+            btnFilterChildSafety.setTextColor(getColor(R.color.obsidian_black));
+        } else {
+            btnFilterChildSafety.setBackgroundResource(R.drawable.menu_button_red);
+            btnFilterChildSafety.setTextColor(getColor(R.color.neon_crimson));
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -169,22 +189,31 @@ public class CallHistoryActivity extends AppCompatActivity {
         layoutEmpty.setVisibility(View.GONE);
         layoutCallEntries.removeAllViews();
 
-        FirestoreHelper.getInstance().getCallHistory(MAX_ENTRIES,
-                new FirestoreHelper.DataCallback<List<CallLog>>() {
-                    @Override
-                    public void onSuccess(List<CallLog> logs) {
-                        allLogs = logs;
-                        progressLoading.setVisibility(View.GONE);
-                        updateStats();
-                        renderEntries();
-                    }
+        try {
+            FirestoreHelper.getInstance().getCallHistory(MAX_ENTRIES,
+                    new FirestoreHelper.DataCallback<List<CallLog>>() {
+                        @Override
+                        public void onSuccess(List<CallLog> logs) {
+                            try {
+                                allLogs = logs != null ? logs : new ArrayList<>();
+                                progressLoading.setVisibility(View.GONE);
+                                updateStats();
+                                renderEntries();
+                            } catch (Exception e) {
+                                Log.e(TAG, "Could not render call history", e);
+                                showLoadFailure("Could not render call history: " + safeError(e.getMessage()));
+                            }
+                        }
 
-                    @Override
-                    public void onError(String error) {
-                        progressLoading.setVisibility(View.GONE);
-                        layoutEmpty.setVisibility(View.VISIBLE);
-                    }
-                });
+                        @Override
+                        public void onError(String error) {
+                            showLoadFailure("Could not load call history: " + safeError(error));
+                        }
+                    });
+        } catch (Exception e) {
+            Log.e(TAG, "Could not start call history load", e);
+            showLoadFailure("Could not load call history: " + safeError(e.getMessage()));
+        }
     }
 
     private void updateStats() {
@@ -195,6 +224,7 @@ public class CallHistoryActivity extends AppCompatActivity {
         int blocked = 0;
 
         for (CallLog log : allLogs) {
+            if (log == null) continue;
             if (log.isScam) scam++;
             if (log.blocked) blocked++;
         }
@@ -217,12 +247,19 @@ public class CallHistoryActivity extends AppCompatActivity {
 
         for (int i = 0; i < allLogs.size(); i++) {
             CallLog log = allLogs.get(i);
+            if (log == null) continue;
 
             // Apply filter
             if (currentFilter.equals("scam") && !log.isScam) continue;
             if (currentFilter.equals("blocked") && !log.blocked) continue;
+            if (currentFilter.equals("child_safety") && !isChildSafetyLog(log)) continue;
 
-            addCallEntryView(log, i);
+            try {
+                addCallEntryView(log, i);
+            } catch (Exception e) {
+                Log.w(TAG, "Skipping bad call history row: " + log.id, e);
+                continue;
+            }
             count++;
         }
 
@@ -280,7 +317,10 @@ public class CallHistoryActivity extends AppCompatActivity {
         row1.addView(tvNumber);
 
         // Scam badge
-        if (log.isScam) {
+        if (isChildSafetyLog(log)) {
+            TextView badge = createBadge("CHILD ALERT", R.color.neon_crimson);
+            row1.addView(badge);
+        } else if (log.isScam) {
             TextView badge = createBadge("SCAM", R.color.neon_crimson);
             row1.addView(badge);
         }
@@ -288,10 +328,11 @@ public class CallHistoryActivity extends AppCompatActivity {
         // Blocked badge
         if (log.blocked) {
             TextView badge = createBadge("BLOCKED", R.color.neon_amber);
-            LinearLayout.LayoutParams badgeParams =
-                    (LinearLayout.LayoutParams) badge.getLayoutParams();
+            LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
             badgeParams.setMargins(dp(6), 0, 0, 0);
-            row1.addView(badge);
+            row1.addView(badge, badgeParams);
         }
 
         card.addView(row1);
@@ -325,7 +366,7 @@ public class CallHistoryActivity extends AppCompatActivity {
         // ── Row 3: Threat type ──
         if (log.threatType != null && !log.threatType.equals("none") && !log.threatType.isEmpty()) {
             TextView tvType = new TextView(this);
-            tvType.setText("▸ " + log.threatType.replace("_", " ").toUpperCase());
+            tvType.setText("> " + log.threatType.replace("_", " ").toUpperCase());
             tvType.setTextColor(getColor(R.color.neon_amber));
             tvType.setTextSize(11);
             tvType.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -342,7 +383,7 @@ public class CallHistoryActivity extends AppCompatActivity {
         if (!transcript.isEmpty()) {
             // Collapsed preview
             TextView tvPreview = new TextView(this);
-            tvPreview.setText(truncate(transcript, 80) + "  ▾ TAP TO EXPAND");
+            tvPreview.setText(truncate(transcript, 80) + "  TAP TO EXPAND");
             tvPreview.setTextColor(getColor(R.color.text_dim));
             tvPreview.setTextSize(11);
             tvPreview.setTypeface(Typeface.MONOSPACE);
@@ -375,19 +416,19 @@ public class CallHistoryActivity extends AppCompatActivity {
             card.setOnClickListener(v -> {
                 if (tvFull.getVisibility() == View.GONE) {
                     tvFull.setVisibility(View.VISIBLE);
-                    tvPreview.setText(truncate(transcript, 80) + "  ▴ TAP TO COLLAPSE");
+                    tvPreview.setText(truncate(transcript, 80) + "  TAP TO COLLAPSE");
                     tvFull.setAlpha(0f);
                     tvFull.animate().alpha(1f).setDuration(200).start();
                 } else {
                     tvFull.setVisibility(View.GONE);
-                    tvPreview.setText(truncate(transcript, 80) + "  ▾ TAP TO EXPAND");
+                    tvPreview.setText(truncate(transcript, 80) + "  TAP TO EXPAND");
                 }
             });
         }
 
         // ── Export CSV Button ──
         Button btnExport = new Button(this);
-        btnExport.setText("📥 EXPORT CSV");
+        btnExport.setText("EXPORT CSV");
         btnExport.setTextColor(getColor(R.color.cyber_cyan));
         btnExport.setTextSize(10);
         btnExport.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -399,7 +440,8 @@ public class CallHistoryActivity extends AppCompatActivity {
         exportParams.setMargins(0, dp(10), 0, 0);
         btnExport.setLayoutParams(exportParams);
         btnExport.setPadding(dp(12), dp(8), dp(12), dp(8));
-        btnExport.setOnClickListener(v -> showExportLanguagePicker(log, btnExport));
+        btnExport.setOnClickListener(v ->
+                exportSingleCallToCsv(log, EXPORT_LANGUAGES[0], btnExport));
         card.addView(btnExport);
 
         layoutCallEntries.addView(card);
@@ -441,7 +483,7 @@ public class CallHistoryActivity extends AppCompatActivity {
 
     private TextView createDividerDot() {
         TextView tv = new TextView(this);
-        tv.setText("  ·  ");
+        tv.setText("  -  ");
         tv.setTextColor(getColor(R.color.text_muted));
         tv.setTextSize(11);
         tv.setTypeface(Typeface.MONOSPACE);
@@ -454,7 +496,7 @@ public class CallHistoryActivity extends AppCompatActivity {
     }
 
     private String formatDate(long timestamp) {
-        if (timestamp == 0) return "—";
+        if (timestamp == 0) return "-";
         SimpleDateFormat sdf = new SimpleDateFormat("dd MMM, HH:mm", Locale.US);
         return sdf.format(new Date(timestamp));
     }
@@ -462,6 +504,53 @@ public class CallHistoryActivity extends AppCompatActivity {
     private String truncate(String text, int max) {
         if (text == null) return "";
         return text.length() <= max ? text : text.substring(0, max - 3) + "...";
+    }
+
+    private boolean isChildSafetyLog(CallLog log) {
+        return log != null
+                && log.threatType != null
+                && log.threatType.equalsIgnoreCase("child_safety");
+    }
+
+    private void showLoadFailure(String message) {
+        if (isFinishing() || isDestroyed()) return;
+        progressLoading.setVisibility(View.GONE);
+        allLogs = new ArrayList<>();
+        updateStats();
+        layoutEmpty.setVisibility(View.VISIBLE);
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+    private void showHistoryErrorView(String messageText) {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.CENTER);
+        root.setPadding(dp(22), dp(22), dp(22), dp(22));
+        root.setBackgroundColor(android.graphics.Color.BLACK);
+
+        TextView title = new TextView(this);
+        title.setText("CALL HISTORY");
+        title.setTextColor(android.graphics.Color.CYAN);
+        title.setTextSize(22);
+        title.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        root.addView(title);
+
+        TextView message = new TextView(this);
+        message.setText(messageText);
+        message.setTextColor(android.graphics.Color.WHITE);
+        message.setGravity(Gravity.CENTER);
+        message.setPadding(0, dp(14), 0, dp(14));
+        root.addView(message);
+
+        Button back = new Button(this);
+        back.setText("BACK");
+        back.setOnClickListener(v -> finish());
+        root.addView(back);
+        setContentView(root);
+    }
+
+    private String safeError(String error) {
+        return error == null || error.trim().isEmpty() ? "Unknown error" : error;
     }
 
     private int dp(int value) {
@@ -594,7 +683,7 @@ public class CallHistoryActivity extends AppCompatActivity {
                 String fileName = writeCallCsv(log, language, exportTranscript, originalTranscript);
                 runOnUiThread(() -> {
                     exportButton.setEnabled(true);
-                    exportButton.setText("📥 EXPORT CSV");
+                    exportButton.setText("EXPORT CSV");
                     Toast.makeText(this, "CSV exported to Downloads/CallTrace/" + fileName,
                             Toast.LENGTH_LONG).show();
                 });
@@ -602,7 +691,7 @@ public class CallHistoryActivity extends AppCompatActivity {
                 Log.e(TAG, "CSV export failed", e);
                 runOnUiThread(() -> {
                     exportButton.setEnabled(true);
-                    exportButton.setText("📥 EXPORT CSV");
+                    exportButton.setText("EXPORT CSV");
                     Toast.makeText(this, "Export failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
             }
@@ -809,10 +898,10 @@ public class CallHistoryActivity extends AppCompatActivity {
             writer.write(escapeCsv(log.transcript != null ? log.transcript : "") + "\n");
             writer.close();
 
-            Toast.makeText(this, "✅ CSV exported to Downloads/CallTrace/" + fileName,
+            Toast.makeText(this, "CSV exported to Downloads/CallTrace/" + fileName,
                     Toast.LENGTH_LONG).show();
         } catch (IOException e) {
-            Toast.makeText(this, "❌ Export failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Export failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 
