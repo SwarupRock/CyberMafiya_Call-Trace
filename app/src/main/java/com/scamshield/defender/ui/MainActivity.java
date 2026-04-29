@@ -191,6 +191,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         registerBroadcastReceivers();
+        requestDefenderStatus();
     }
 
     @Override
@@ -233,6 +234,8 @@ public class MainActivity extends AppCompatActivity {
     // ═══════════════════════════════════════════════════════════════
 
     private void setupListeners() {
+        setupTranscriptScrollLock();
+
         btnToggleShield.setOnClickListener(v -> {
             if (isDefenderRunning) {
                 stopDefender();
@@ -255,6 +258,21 @@ public class MainActivity extends AppCompatActivity {
         ivUserProfile.setOnClickListener(v -> showProfileActions());
 
         btnUploadAudio.setOnClickListener(v -> launchAudioPicker());
+    }
+
+    private void setupTranscriptScrollLock() {
+        scrollTranscript.setOnTouchListener((view, event) -> {
+            boolean canScrollTranscript = scrollTranscript.canScrollVertically(-1)
+                    || scrollTranscript.canScrollVertically(1);
+
+            if (canScrollTranscript) {
+                view.getParent().requestDisallowInterceptTouchEvent(
+                        event.getAction() != MotionEvent.ACTION_UP
+                                && event.getAction() != MotionEvent.ACTION_CANCEL);
+            }
+
+            return false;
+        });
     }
 
     private void showProfileActions() {
@@ -370,6 +388,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void runPostLoginSetup() {
+        syncNvidiaApiKeysForUser(() -> runPostLoginSetupAfterKeySync());
+    }
+
+    private void runPostLoginSetupAfterKeySync() {
         if (!hasAllPermissions()) {
             requestPermissions();
             return;
@@ -379,6 +401,39 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         promptBackgroundRunPermission(true);
+    }
+
+    private void syncNvidiaApiKeysForUser(Runnable afterSync) {
+        String localLlmKey = getNvidiaLlmApiKey();
+        String localAsrKey = getNvidiaAsrApiKey();
+
+        if (hasNvidiaAnalysisKey()) {
+            FirestoreHelper.getInstance().saveNvidiaApiKeys(localLlmKey, localAsrKey, null);
+            afterSync.run();
+            return;
+        }
+
+        FirestoreHelper.getInstance().getNvidiaApiKeys(new FirestoreHelper.DataCallback<Map<String, String>>() {
+            @Override
+            public void onSuccess(Map<String, String> keys) {
+                String cloudLlmKey = keys != null ? keys.get("llm") : null;
+                String cloudAsrKey = keys != null ? keys.get("asr") : null;
+                if (cloudLlmKey != null && !cloudLlmKey.trim().isEmpty()) {
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                            .putString(PREF_NVIDIA_LLM_API_KEY, cloudLlmKey)
+                            .putString(PREF_NVIDIA_ASR_API_KEY, cloudAsrKey != null ? cloudAsrKey : "")
+                            .apply();
+                    tvAiSource.setText("NVIDIA AI READY");
+                }
+                runOnUiThread(afterSync);
+            }
+
+            @Override
+            public void onError(String error) {
+                Log.w(TAG, "Could not restore NVIDIA keys from Firestore: " + error);
+                runOnUiThread(afterSync);
+            }
+        });
     }
 
     private void promptBackgroundRunPermission(boolean firstRun) {
@@ -665,6 +720,7 @@ public class MainActivity extends AppCompatActivity {
                     .putString(PREF_NVIDIA_LLM_API_KEY, key)
                     .putString(PREF_NVIDIA_ASR_API_KEY, asrKey)
                     .apply();
+            FirestoreHelper.getInstance().saveNvidiaApiKeys(key, asrKey, null);
             tvAiSource.setText("NVIDIA AI READY");
             Toast.makeText(this, "NVIDIA APIs connected", Toast.LENGTH_SHORT).show();
             dialog.dismiss();
@@ -880,6 +936,18 @@ public class MainActivity extends AppCompatActivity {
                 .registerReceiver(dashboardReceiver, filter);
     }
 
+    private void requestDefenderStatus() {
+        if (!isDefenderRunning) return;
+
+        Intent serviceIntent = new Intent(this, CallDefenderService.class);
+        serviceIntent.putExtra("request_status", true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+    }
+
     private final BroadcastReceiver dashboardReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -914,7 +982,7 @@ public class MainActivity extends AppCompatActivity {
                 tvCallState.setTextColor(getColor(R.color.neon_amber));
                 tvCallerNumber.setText("From: " + (number != null ? number : "Unknown"));
                 transcriptBuilder.setLength(0);
-                tvTranscript.setText("Waiting for call to be answered...");
+                tvTranscript.setText("Incoming call detected. Answer it to start live scam analysis.");
                 resetThreatUI();
                 break;
 
@@ -922,6 +990,9 @@ public class MainActivity extends AppCompatActivity {
                 tvCallState.setText("⚡ CALL ACTIVE — ANALYZING");
                 tvCallState.setTextColor(getColor(R.color.neon_crimson));
                 tvTranscript.setText("🔊 Enable SPEAKER MODE for live transcription\nListening...");
+                if (transcriptBuilder.length() == 0) {
+                    tvTranscript.setText("Listening to this incoming call for scam phrases like OTP, KYC, bank, police, refund, and remote access...");
+                }
                 livePulse.setVisibility(View.VISIBLE);
                 break;
 
@@ -929,6 +1000,9 @@ public class MainActivity extends AppCompatActivity {
                 tvCallState.setText("MONITORING");
                 tvCallState.setTextColor(getColor(R.color.cyber_cyan));
                 tvCallerNumber.setText("Waiting for incoming call...");
+                if (transcriptBuilder.length() == 0) {
+                    tvTranscript.setText("Waiting for incoming call. Scam warnings will vibrate 3 times during suspicious calls.");
+                }
                 livePulse.setVisibility(View.GONE);
 
                 // Update stats
@@ -953,10 +1027,15 @@ public class MainActivity extends AppCompatActivity {
     private void handleTranscriptUpdate(Intent intent) {
         String text = intent.getStringExtra("text");
         boolean isPartial = intent.getBooleanExtra("partial", false);
+        boolean isStatus = intent.getBooleanExtra("status", false);
 
         if (text == null) return;
 
-        if (isPartial) {
+        if (isStatus) {
+            String current = transcriptBuilder.toString();
+            tvTranscript.setText((current.isEmpty() ? "" : current + "\n\n")
+                    + "STATUS: " + text);
+        } else if (isPartial) {
             // Show partial (in-progress) text in dimmer color
             String current = transcriptBuilder.toString();
             tvTranscript.setText(current + (current.isEmpty() ? "" : "\n") + "▸ " + text);
@@ -966,6 +1045,7 @@ public class MainActivity extends AppCompatActivity {
             transcriptBuilder.append("» ").append(text);
             tvTranscript.setText(transcriptBuilder.toString());
         }
+        scrollTranscript.post(() -> scrollTranscript.fullScroll(View.FOCUS_DOWN));
     }
 
     private void handleThreatUpdate(Intent intent) {
@@ -1322,6 +1402,7 @@ public class MainActivity extends AppCompatActivity {
             entry.put("blocked", false);
             entry.put("callDurationSeconds", 0);
             FirestoreHelper.getInstance().saveCallLog(entry);
+            FirestoreHelper.getInstance().saveCsvBackup("audio_" + entry.get("timestamp"), entry);
             Log.i(TAG, "Audio analysis saved to history");
         } catch (Exception e) {
             Log.e(TAG, "Failed to save audio analysis", e);

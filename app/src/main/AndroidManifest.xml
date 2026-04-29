@@ -17,6 +17,7 @@
 
     <!-- Audio recording: capture mic for real-time scam analysis -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!-- Vibration: double-buzz alert when scam is detected -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -102,7 +103,7 @@
             android:name=".service.CallDefenderService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:foregroundServiceType="microphone|phoneCall" />
 
         <!-- ── Broadcast Receiver (phone state changes) ──────── -->
         <receiver

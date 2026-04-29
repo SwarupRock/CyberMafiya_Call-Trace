@@ -7,11 +7,13 @@ import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.firebase.firestore.Query;
+import com.google.firebase.firestore.SetOptions;
 import com.scamshield.defender.model.CallLog;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -34,6 +36,9 @@ public class FirestoreHelper {
     private static final String COLLECTION_USERS = "users";
     private static final String COLLECTION_CALL_HISTORY = "call_history";
     private static final String COLLECTION_BLOCKED = "blocked_numbers";
+    private static final String COLLECTION_CSV_BACKUPS = "csv_backups";
+    private static final String COLLECTION_PRIVATE_SETTINGS = "private_settings";
+    private static final String DOCUMENT_NVIDIA_KEYS = "nvidia_keys";
 
     private static volatile FirestoreHelper instance;
     private final FirebaseFirestore db;
@@ -77,6 +82,7 @@ public class FirestoreHelper {
                 .add(callLog.toMap())
                 .addOnSuccessListener(docRef -> {
                     Log.i(TAG, "✅ Call log saved: " + docRef.getId());
+                    saveCsvBackup(docRef.getId(), callLog.toMap());
                     if (callback != null) callback.onSuccess();
                 })
                 .addOnFailureListener(e -> {
@@ -230,6 +236,109 @@ public class FirestoreHelper {
     // ═══════════════════════════════════════════════════════════════
     // CALLBACKS
     // ═══════════════════════════════════════════════════════════════
+
+    public void saveNvidiaApiKeys(String llmKey, String asrKey, ResultCallback callback) {
+        String uid = getUid();
+        if (uid == null) {
+            if (callback != null) callback.onError("Not authenticated");
+            return;
+        }
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("nvidiaLlmApiKey", llmKey != null ? llmKey : "");
+        data.put("nvidiaAsrApiKey", asrKey != null ? asrKey : "");
+        data.put("updatedAt", System.currentTimeMillis());
+
+        db.collection(COLLECTION_USERS).document(uid)
+                .collection(COLLECTION_PRIVATE_SETTINGS)
+                .document(DOCUMENT_NVIDIA_KEYS)
+                .set(data, SetOptions.merge())
+                .addOnSuccessListener(unused -> {
+                    Log.i(TAG, "NVIDIA API keys synced to Firestore");
+                    if (callback != null) callback.onSuccess();
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "NVIDIA API key sync failed", e);
+                    if (callback != null) callback.onError(e.getMessage());
+                });
+    }
+
+    public void getNvidiaApiKeys(DataCallback<Map<String, String>> callback) {
+        String uid = getUid();
+        if (uid == null) {
+            if (callback != null) callback.onError("Not authenticated");
+            return;
+        }
+
+        db.collection(COLLECTION_USERS).document(uid)
+                .collection(COLLECTION_PRIVATE_SETTINGS)
+                .document(DOCUMENT_NVIDIA_KEYS)
+                .get()
+                .addOnSuccessListener(document -> {
+                    Map<String, String> keys = new HashMap<>();
+                    if (document.exists()) {
+                        keys.put("llm", document.getString("nvidiaLlmApiKey"));
+                        keys.put("asr", document.getString("nvidiaAsrApiKey"));
+                    }
+                    if (callback != null) callback.onSuccess(keys);
+                })
+                .addOnFailureListener(e -> {
+                    if (callback != null) callback.onError(e.getMessage());
+                });
+    }
+
+    public void saveCsvBackup(String callLogId, Map<String, Object> callData) {
+        String uid = getUid();
+        if (uid == null || callLogId == null || callData == null) return;
+
+        String fileName = "call_trace_" + callLogId + ".csv";
+        Map<String, Object> backup = new HashMap<>();
+        backup.put("callLogId", callLogId);
+        backup.put("fileName", fileName);
+        backup.put("mimeType", "text/csv");
+        backup.put("csv", buildCsv(callData));
+        backup.put("createdAt", System.currentTimeMillis());
+
+        db.collection(COLLECTION_USERS).document(uid)
+                .collection(COLLECTION_CSV_BACKUPS)
+                .document(callLogId)
+                .set(backup)
+                .addOnSuccessListener(unused -> Log.i(TAG, "CSV backup saved: " + fileName))
+                .addOnFailureListener(e -> Log.w(TAG, "CSV backup failed: " + e.getMessage()));
+    }
+
+    private String buildCsv(Map<String, Object> data) {
+        float score = number(data.get("scamScore"));
+        return "Phone Number,Date,Duration (s),Scam Score,Is Scam,Threat Type,Risk Level,Blocked,Transcript\n"
+                + csv(data.get("phoneNumber")) + ","
+                + csv(data.get("timestamp")) + ","
+                + csv(data.get("callDurationSeconds")) + ","
+                + csv(String.format(Locale.US, "%.2f", score)) + ","
+                + csv(Boolean.TRUE.equals(data.get("isScam")) ? "YES" : "NO") + ","
+                + csv(data.get("threatType")) + ","
+                + csv(riskLabel(score)) + ","
+                + csv(Boolean.TRUE.equals(data.get("blocked")) ? "YES" : "NO") + ","
+                + csv(data.get("transcript")) + "\n";
+    }
+
+    private String csv(Object value) {
+        String text = value != null ? value.toString() : "";
+        if (text.contains(",") || text.contains("\"") || text.contains("\n")) {
+            return "\"" + text.replace("\"", "\"\"") + "\"";
+        }
+        return text;
+    }
+
+    private float number(Object value) {
+        return value instanceof Number ? ((Number) value).floatValue() : 0f;
+    }
+
+    private String riskLabel(float score) {
+        if (score >= 0.70f) return "HIGH RISK";
+        if (score >= 0.40f) return "MEDIUM RISK";
+        if (score >= 0.10f) return "LOW RISK";
+        return "SAFE";
+    }
 
     public interface ResultCallback {
         void onSuccess();

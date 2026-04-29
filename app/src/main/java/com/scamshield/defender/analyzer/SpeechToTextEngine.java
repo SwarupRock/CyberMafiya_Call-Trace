@@ -33,7 +33,8 @@ import java.util.Locale;
 public class SpeechToTextEngine {
 
     private static final String TAG = "SpeechToText";
-    private static final int RESTART_DELAY_MS = 300;
+    private static final int RESTART_DELAY_MS = 700;
+    private static final long USER_VISIBLE_ERROR_INTERVAL_MS = 6000L;
 
     private final Context context;
     private SpeechRecognizer recognizer;
@@ -41,6 +42,8 @@ public class SpeechToTextEngine {
 
     private volatile boolean isListening = false;
     private volatile boolean shouldContinue = false;
+    private long lastUserVisibleErrorAt = 0L;
+    private float peakRmsSinceStart = Float.NEGATIVE_INFINITY;
 
     private TranscriptListener listener;
 
@@ -143,18 +146,23 @@ public class SpeechToTextEngine {
 
             recognizer = SpeechRecognizer.createSpeechRecognizer(context);
             recognizer.setRecognitionListener(new InternalListener());
+            peakRmsSinceStart = Float.NEGATIVE_INFINITY;
 
             // Configure recognition intent
             Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US");
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, Locale.ENGLISH.toLanguageTag());
+            String languageTag = Locale.getDefault().toLanguageTag();
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, languageTag);
             intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
             intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-            // Keep listening longer during pauses
-            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000);
-            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5000);
+            intent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.getPackageName());
+            intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false);
+            // Phone-call speaker audio often arrives as short phrases with pauses.
+            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500);
+            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1000);
+            intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1500);
 
             recognizer.startListening(intent);
             isListening = true;
@@ -197,7 +205,7 @@ public class SpeechToTextEngine {
 
         @Override
         public void onRmsChanged(float rmsdB) {
-            // Could use for audio level visualization
+            peakRmsSinceStart = Math.max(peakRmsSinceStart, rmsdB);
         }
 
         @Override
@@ -218,13 +226,15 @@ public class SpeechToTextEngine {
 
             switch (error) {
                 case SpeechRecognizer.ERROR_NO_MATCH:
-                    errorMsg = "No speech detected";
+                    errorMsg = peakRmsSinceStart < 1.0f
+                            ? "The recognizer is hearing silence. Use in-call speakerphone, not just full call volume."
+                            : "Audio was heard, but no words were recognized yet. Keep speakerphone on and let the caller speak clearly.";
                     break;
                 case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
-                    errorMsg = "Speech timeout";
+                    errorMsg = "Listening, but Android did not detect speech yet. Speakerphone must be audible to the mic.";
                     break;
                 case SpeechRecognizer.ERROR_AUDIO:
-                    errorMsg = "Audio error";
+                    errorMsg = "Microphone audio error while listening to the speaker.";
                     break;
                 case SpeechRecognizer.ERROR_NETWORK:
                 case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
@@ -234,12 +244,19 @@ public class SpeechToTextEngine {
                     errorMsg = "Microphone permission required";
                     if (listener != null) listener.onError(errorMsg);
                     return; // Don't restart
+                case 10:
+                    errorMsg = "Android speech service is rate-limiting live recognition. Cloud ASR is recommended.";
+                    break;
+                case 11:
+                    errorMsg = "Android speech service disconnected during the call. Cloud ASR fallback is recommended.";
+                    break;
                 default:
                     errorMsg = "Recognition error: " + error;
                     break;
             }
 
             Log.w(TAG, errorMsg);
+            notifyUserVisibleError(errorMsg);
             // Restart for continuous listening
             restartListening();
         }
@@ -288,5 +305,15 @@ public class SpeechToTextEngine {
         public void onEvent(int eventType, Bundle params) {
             // Not used
         }
+    }
+
+    private void notifyUserVisibleError(String errorMsg) {
+        if (listener == null || errorMsg == null || errorMsg.trim().isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        if (now - lastUserVisibleErrorAt < USER_VISIBLE_ERROR_INTERVAL_MS) return;
+
+        lastUserVisibleErrorAt = now;
+        listener.onError(errorMsg);
     }
 }

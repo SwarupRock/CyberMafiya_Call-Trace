@@ -5,10 +5,14 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.Manifest;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -26,9 +30,11 @@ import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import com.scamshield.defender.R;
+import com.scamshield.defender.analyzer.LiveMicTranscriber;
 import com.scamshield.defender.analyzer.ScamAnalyzerAI;
 import com.scamshield.defender.analyzer.SpeechToTextEngine;
 import com.scamshield.defender.model.CallLog;
@@ -68,13 +74,16 @@ public class CallDefenderService extends Service {
     // ── Call Bomber Detection ────────────────────────────────────
     private static final int BOMBER_CALL_THRESHOLD = 3;       // 3+ calls = bomber
     private static final long BOMBER_WINDOW_MS = 5 * 60 * 1000; // within 5 minutes
+    private static final long PRIVACY_LIMITED_WARNING_DELAY_MS = 12_000L;
 
     // ── State ────────────────────────────────────────────────────
     private TelephonyManager telephonyManager;
+    private AudioManager audioManager;
     private PhoneStateListener phoneStateListener;
     private Object telephonyCallbackObj;
 
     private SpeechToTextEngine speechEngine;
+    private LiveMicTranscriber liveMicTranscriber;
     private ScamAnalyzerAI scamAnalyzer;
     private Handler mainHandler;
 
@@ -87,6 +96,11 @@ public class CallDefenderService extends Service {
     private long callStartTime = 0;
     private int lastCallState = TelephonyManager.CALL_STATE_IDLE;
     private boolean isContactNumber = false; // true = caller is in phonebook, skip scam analysis
+    private boolean speechStartedForCall = false;
+    private boolean audioRouteChangedForCall = false;
+    private boolean previousSpeakerphoneOn = false;
+    private int previousAudioMode = AudioManager.MODE_NORMAL;
+    private boolean privacyLimitedWarningTriggered = false;
 
     // Full transcript accumulated during the call
     private final StringBuilder callTranscript = new StringBuilder();
@@ -103,7 +117,7 @@ public class CallDefenderService extends Service {
             implements TelephonyCallback.CallStateListener {
         @Override
         public void onCallStateChanged(int state) {
-            handleCallStateChange(state);
+            handleCallStateChange(state, false);
         }
     }
 
@@ -120,13 +134,16 @@ public class CallDefenderService extends Service {
 
         mainHandler = new Handler(Looper.getMainLooper());
         telephonyManager = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
 
         // Initialize AI components
         speechEngine = new SpeechToTextEngine(this);
         scamAnalyzer = new ScamAnalyzerAI(this);
+        liveMicTranscriber = new LiveMicTranscriber(this, scamAnalyzer);
 
         // Wire speech-to-text → AI analyzer
         setupSpeechToAIPipeline();
+        setupLiveMicPipeline();
 
         // Wire AI analyzer → alerts + dashboard
         setupAIAlertPipeline();
@@ -144,6 +161,9 @@ public class CallDefenderService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && intent.getBooleanExtra("request_status", false)) {
+            broadcastCurrentCallStatus();
+        }
         if (intent != null && intent.hasExtra("incoming_number")) {
             currentIncomingNumber = intent.getStringExtra("incoming_number");
             Log.d(TAG, "Incoming number: " + maskNumber(currentIncomingNumber));
@@ -151,7 +171,7 @@ public class CallDefenderService extends Service {
         if (intent != null && intent.hasExtra("phone_state")) {
             int mappedState = mapPhoneState(intent.getStringExtra("phone_state"));
             if (mappedState != -1) {
-                handleCallStateChange(mappedState);
+                handleCallStateChange(mappedState, true);
             }
         }
         return START_STICKY;
@@ -161,6 +181,7 @@ public class CallDefenderService extends Service {
     public void onDestroy() {
         Log.i(TAG, "Service destroyed");
         speechEngine.stop();
+        liveMicTranscriber.stop();
         unregisterPhoneStateListener();
         super.onDestroy();
     }
@@ -190,22 +211,56 @@ public class CallDefenderService extends Service {
 
             @Override
             public void onFinalResult(String finalText, String fullTranscript) {
-                // Accumulate transcript for saving
-                if (callTranscript.length() > 0) callTranscript.append(" ");
-                callTranscript.append(finalText);
-
-                // Broadcast final transcript to dashboard
-                broadcastTranscript(finalText, false);
-
-                // Feed to AI analyzer
-                scamAnalyzer.analyzeChunk(finalText, fullTranscript);
+                handleFinalTranscript(finalText, fullTranscript);
             }
 
             @Override
             public void onError(String error) {
                 Log.w(TAG, "STT error: " + error);
+                broadcastTranscriptStatus(error);
             }
         });
+    }
+
+    private void setupLiveMicPipeline() {
+        liveMicTranscriber.setListener(new LiveMicTranscriber.Listener() {
+            @Override
+            public void onTranscript(String text) {
+                mainHandler.post(() ->
+                        handleFinalTranscript(text, callTranscript.toString() + " " + text));
+            }
+
+            @Override
+            public void onStatus(String status) {
+                broadcastTranscriptStatus(status);
+            }
+
+            @Override
+            public void onError(String error) {
+                broadcastTranscriptStatus(error);
+            }
+
+            @Override
+            public void onDeadAudioInput() {
+                mainHandler.post(() -> {
+                    if (!speechEngine.isListening()) {
+                        broadcastTranscriptStatus("Phone is blocking raw mic samples during this call. Trying Android speech service fallback.");
+                        speechEngine.start();
+                    }
+                });
+            }
+        });
+    }
+
+    private void handleFinalTranscript(String finalText, String fullTranscript) {
+        if (finalText == null || finalText.trim().isEmpty()) return;
+        String text = finalText.trim();
+
+        if (callTranscript.length() > 0) callTranscript.append(" ");
+        callTranscript.append(text);
+
+        broadcastTranscript(text, false);
+        scamAnalyzer.analyzeChunk(text, fullTranscript != null ? fullTranscript : callTranscript.toString());
     }
 
     /**
@@ -222,12 +277,11 @@ public class CallDefenderService extends Service {
 
             @Override
             public void onScamAlert(ScamAnalyzerAI.AnalysisResult result) {
-                // First alert — warn user with vibration
+                Log.w(TAG, "SCAM WATCH - Confidence: " + (result.confidence * 100) + "%");
+                updateNotification("SCAM WARNING - Cut the call if this sounds suspicious");
                 if (!alertTriggered) {
                     alertTriggered = true;
-                    Log.w(TAG, "⚠️ SCAM ALERT — Confidence: " + (result.confidence * 100) + "%");
                     triggerScamAlert();
-                    updateNotification("⚠️ SCAM ALERT — " + result.threatType);
                 }
             }
 
@@ -237,8 +291,11 @@ public class CallDefenderService extends Service {
                 if (!isScamDetected) {
                     isScamDetected = true;
                     Log.w(TAG, "🚫 SCAM CONFIRMED — " + (result.confidence * 100) + "%");
-                    triggerScamAlert(); // Second vibration for confirmed
-                    updateNotification("🚫 SCAM CONFIRMED — End this call!");
+                    if (!alertTriggered) {
+                        alertTriggered = true;
+                        triggerScamAlert();
+                    }
+                    updateNotification("SCAM CONFIRMED - Cut the call!");
                 }
             }
         });
@@ -265,7 +322,7 @@ public class CallDefenderService extends Service {
                     if (phoneNumber != null && !phoneNumber.isEmpty()) {
                         currentIncomingNumber = phoneNumber;
                     }
-                    handleCallStateChange(state);
+                    handleCallStateChange(state, false);
                 }
             };
             telephonyManager.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE);
@@ -286,7 +343,11 @@ public class CallDefenderService extends Service {
     // ═══════════════════════════════════════════════════════════════
 
     private void handleCallStateChange(int state) {
-        if (state == lastCallState) {
+        handleCallStateChange(state, false);
+    }
+
+    private void handleCallStateChange(int state, boolean forceFromBroadcast) {
+        if (state == lastCallState && !forceFromBroadcast) {
             return;
         }
         lastCallState = state;
@@ -294,7 +355,7 @@ public class CallDefenderService extends Service {
         switch (state) {
 
             case TelephonyManager.CALL_STATE_RINGING:
-                Log.i(TAG, "📞 RINGING — " + maskNumber(currentIncomingNumber));
+                Log.i(TAG, "RINGING - " + maskNumber(currentIncomingNumber));
                 isScamDetected = false;
                 alertTriggered = false;
                 livePeakAlertTriggered = false;
@@ -302,61 +363,59 @@ public class CallDefenderService extends Service {
                 currentThreatType = "none";
                 callTranscript.setLength(0);
                 scamAnalyzer.reset();
+                speechStartedForCall = false;
+                privacyLimitedWarningTriggered = false;
 
-                // Check if caller is in contacts — if yes, skip all scam analysis
                 isContactNumber = (currentIncomingNumber != null)
                         && isNumberInContacts(currentIncomingNumber);
 
                 if (isContactNumber) {
-                    Log.i(TAG, "✅ CONTACT — " + maskNumber(currentIncomingNumber) + " is in phonebook, skipping scam analysis");
-                    updateNotification("✅ Contact call — " + maskNumber(currentIncomingNumber));
+                    updateNotification("Contact call - waiting for answer");
                 } else {
-                    updateNotification("⚡ Incoming call — Preparing Call Trace...");
+                    updateNotification("Incoming call - preparing Call Trace");
                 }
 
                 broadcastCallState("RINGING", currentIncomingNumber);
+                scheduleOffhookFallbackCheck();
 
-                // Only run scam checks for UNKNOWN numbers
                 if (!isContactNumber && currentIncomingNumber != null) {
                     checkScamDatabase(currentIncomingNumber);
-                    // Check for call bomber
                     if (isCallBomber(currentIncomingNumber)) {
-                        Log.w(TAG, "🚨 CALL BOMBER DETECTED: " + maskNumber(currentIncomingNumber));
+                        Log.w(TAG, "CALL BOMBER DETECTED: " + maskNumber(currentIncomingNumber));
                         raiseNumberIntelligenceAlert(
                                 "call_bomber",
                                 0.95f,
-                                "🚨 CALL BOMBER — " + maskNumber(currentIncomingNumber));
+                                "CALL BOMBER - " + maskNumber(currentIncomingNumber));
                     }
                 }
                 break;
 
             case TelephonyManager.CALL_STATE_OFFHOOK:
-                Log.i(TAG, "🎙️ OFF-HOOK — Starting real-time analysis");
-                callStartTime = System.currentTimeMillis();
+                Log.i(TAG, "OFF-HOOK - Starting live transcription and scam analysis");
+                if (callStartTime == 0) {
+                    callStartTime = System.currentTimeMillis();
+                }
 
                 if (isContactNumber) {
-                    // Contact call — don't analyze, just monitor
-                    updateNotification("✅ In call with contact");
-                    broadcastCallState("ACTIVE", currentIncomingNumber);
-                    Log.i(TAG, "Skipping STT + AI for contact call");
+                    updateNotification("Contact call active - transcribing");
+                } else if (isScamDetected) {
+                    updateNotification("LIVE WARNING - " + currentThreatType);
+                    triggerLivePeakAlertOnce();
                 } else {
-                    // Unknown number — full AI analysis
-                    if (isScamDetected) {
-                        updateNotification("🚨 LIVE WARNING — " + currentThreatType);
-                        triggerLivePeakAlertOnce();
-                    } else {
-                        updateNotification("🔴 LIVE — AI analyzing call audio...");
-                    }
-                    broadcastCallState("ACTIVE", currentIncomingNumber);
-                    mainHandler.post(() -> speechEngine.start());
+                    updateNotification("LIVE - AI analyzing call audio");
                 }
-                break;
 
+                broadcastCallState("ACTIVE", currentIncomingNumber);
+                routeCallToSpeakerForTranscription();
+                startLiveSpeechAnalysis();
+                schedulePrivacyLimitedWarning();
+                break;
             case TelephonyManager.CALL_STATE_IDLE:
                 Log.i(TAG, "📴 IDLE — Call ended");
 
                 // Stop speech engine
                 speechEngine.stop();
+                liveMicTranscriber.stop();
 
                 int callDuration = callStartTime > 0
                         ? (int) ((System.currentTimeMillis() - callStartTime) / 1000)
@@ -389,8 +448,114 @@ public class CallDefenderService extends Service {
                 currentIncomingNumber = null;
                 callStartTime = 0;
                 isContactNumber = false;
+                speechStartedForCall = false;
+                privacyLimitedWarningTriggered = false;
+                restoreAudioRouteAfterCall();
                 callTranscript.setLength(0);
                 break;
+        }
+    }
+
+    private void schedulePrivacyLimitedWarning() {
+        mainHandler.postDelayed(() -> {
+            if (lastCallState != TelephonyManager.CALL_STATE_OFFHOOK) return;
+            if (privacyLimitedWarningTriggered || alertTriggered) return;
+            if (callTranscript.length() > 0) return;
+
+            privacyLimitedWarningTriggered = true;
+            currentScamScore = Math.max(currentScamScore, 0.40f);
+            currentThreatType = "audio_unavailable_unknown_call";
+            updateNotification("Call Trace cannot hear this call - stay cautious");
+            broadcastTranscriptStatus("Privacy-limited mode: Android is not exposing call speech. Stay cautious; suspicious-call warning active.");
+            triggerScamAlert();
+        }, PRIVACY_LIMITED_WARNING_DELAY_MS);
+    }
+
+    private void startLiveSpeechAnalysis() {
+        if (speechStartedForCall && (speechEngine.isListening() || liveMicTranscriber.isRunning())) {
+            return;
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            broadcastTranscriptStatus("Microphone permission is missing. Grant RECORD_AUDIO and restart Call Trace.");
+            return;
+        }
+        speechStartedForCall = true;
+        mainHandler.post(() -> {
+            Log.i(TAG, "Starting live transcription + real-time scam analysis");
+            if (scamAnalyzer.hasAsrKey()) {
+                speechEngine.stop();
+                liveMicTranscriber.start();
+            } else {
+                speechEngine.start();
+                liveMicTranscriber.start();
+            }
+        });
+    }
+
+    private void routeCallToSpeakerForTranscription() {
+        if (audioManager == null || audioRouteChangedForCall) return;
+
+        try {
+            previousSpeakerphoneOn = audioManager.isSpeakerphoneOn();
+            previousAudioMode = audioManager.getMode();
+            audioRouteChangedForCall = true;
+
+            boolean routed = false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                for (AudioDeviceInfo device : audioManager.getAvailableCommunicationDevices()) {
+                    if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                        routed = audioManager.setCommunicationDevice(device);
+                        break;
+                    }
+                }
+            }
+
+            if (!routed) {
+                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                audioManager.setSpeakerphoneOn(true);
+            }
+
+            broadcastTranscriptStatus("Speakerphone route requested for live transcription. Keep the caller audible near the microphone.");
+            Log.i(TAG, "Speakerphone routing requested for live transcription");
+        } catch (Exception e) {
+            Log.w(TAG, "Could not route call audio to speakerphone", e);
+            broadcastTranscriptStatus("Turn on in-call speakerphone for live transcription. Full call volume alone is not enough.");
+        }
+    }
+
+    private void restoreAudioRouteAfterCall() {
+        if (audioManager == null || !audioRouteChangedForCall) return;
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice();
+            }
+            audioManager.setSpeakerphoneOn(previousSpeakerphoneOn);
+            audioManager.setMode(previousAudioMode);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not restore audio route after call", e);
+        } finally {
+            audioRouteChangedForCall = false;
+        }
+    }
+
+    private void scheduleOffhookFallbackCheck() {
+        mainHandler.postDelayed(this::promoteToActiveIfPhoneIsOffhook, 1500);
+        mainHandler.postDelayed(this::promoteToActiveIfPhoneIsOffhook, 3500);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void promoteToActiveIfPhoneIsOffhook() {
+        if (lastCallState != TelephonyManager.CALL_STATE_RINGING) return;
+        try {
+            if (telephonyManager != null
+                    && telephonyManager.getCallState() == TelephonyManager.CALL_STATE_OFFHOOK) {
+                Log.i(TAG, "Fallback detected OFFHOOK; promoting call to active analysis");
+                handleCallStateChange(TelephonyManager.CALL_STATE_OFFHOOK, true);
+            }
+        } catch (SecurityException e) {
+            Log.w(TAG, "Cannot poll call state for OFFHOOK fallback", e);
         }
     }
 
@@ -499,6 +664,13 @@ public class CallDefenderService extends Service {
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
+    private void broadcastTranscriptStatus(String text) {
+        Intent intent = new Intent(MainActivity.ACTION_TRANSCRIPT);
+        intent.putExtra("text", text);
+        intent.putExtra("status", true);
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+    }
+
     private void broadcastThreatUpdate(ScamAnalyzerAI.AnalysisResult result) {
         Intent intent = new Intent(MainActivity.ACTION_THREAT_UPDATE);
         intent.putExtra("confidence", result.confidence);
@@ -514,6 +686,19 @@ public class CallDefenderService extends Service {
             intent.putExtra("keywords", sb.toString());
         }
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+    }
+
+    private void broadcastCurrentCallStatus() {
+        if (lastCallState == TelephonyManager.CALL_STATE_RINGING) {
+            broadcastCallState("RINGING", currentIncomingNumber);
+        } else if (lastCallState == TelephonyManager.CALL_STATE_OFFHOOK) {
+            broadcastCallState("ACTIVE", currentIncomingNumber);
+            if (!speechStartedForCall) {
+                startLiveSpeechAnalysis();
+            }
+        } else {
+            broadcastCallState("IDLE", null);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -603,7 +788,7 @@ public class CallDefenderService extends Service {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // SCAM ALERT — Double Vibration
+    // SCAM ALERT - three-pulse cut-call signal
     // ═══════════════════════════════════════════════════════════════
 
     private void triggerLivePeakAlertOnce() {
@@ -613,7 +798,7 @@ public class CallDefenderService extends Service {
     }
 
     private void triggerScamAlert() {
-        Log.w(TAG, "🔔 SCAM ALERT — peak vibration!");
+        Log.w(TAG, "SCAM ALERT - three-pulse cut-call signal");
 
         Vibrator vibrator;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -626,7 +811,7 @@ public class CallDefenderService extends Service {
 
         if (vibrator == null || !vibrator.hasVibrator()) return;
 
-        long[] pattern = {0, 450, 120, 450, 120, 700};
+        long[] pattern = {0, 450, 160, 450, 160, 450};
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             int[] amplitudes = {0, 255, 0, 255, 0, 255};
             vibrator.vibrate(VibrationEffect.createWaveform(pattern, amplitudes, -1));

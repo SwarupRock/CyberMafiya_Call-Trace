@@ -37,6 +37,8 @@ public class ScamAnalyzerAI {
     private static final float LOCAL_ALERT_THRESHOLD = 0.40f;
     private static final float SCAM_CONFIRMED_THRESHOLD = 0.70f;
     private static final float CLOUD_TRIGGER_THRESHOLD = 0.30f;
+    private static final long CLOUD_ANALYSIS_INTERVAL_MS = 10_000L;
+    private static final int CLOUD_ANALYSIS_MIN_NEW_CHARS = 80;
     private static final String PREFS_NAME = "scam_shield_prefs";
     private static final String PREF_NVIDIA_LLM_API_KEY = "nvidia_llm_api_key";
     private static final String PREF_NVIDIA_ASR_API_KEY = "nvidia_asr_api_key";
@@ -44,7 +46,7 @@ public class ScamAnalyzerAI {
     private static final String NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
     private static final String NVIDIA_RIVA_STREAMING_URL =
             "https://grpc.nvcf.nvidia.com/nvidia.riva.asr.RivaSpeechRecognition/StreamingRecognize";
-    private static final String NVIDIA_PARAKEET_FUNCTION_ID = "1598d209-5e27-4d3c-8079-4751568b1081";
+    private static final String NVIDIA_ASR_FUNCTION_ID = "bb0837de-8c7b-481f-9ec8-ef5663e9c1fa";
     private static final MediaType GRPC_MEDIA_TYPE = MediaType.get("application/grpc");
 
     private static final Map<String, String[]> SCAM_KEYWORDS = new HashMap<>();
@@ -118,7 +120,9 @@ public class ScamAnalyzerAI {
     private float currentScore = 0f;
     private String threatCategory = "none";
     private int analysisCount = 0;
-    private boolean cloudAnalysisDone = false;
+    private boolean cloudAnalysisInFlight = false;
+    private long lastCloudAnalysisAt = 0L;
+    private int lastCloudTranscriptLength = 0;
     private AnalysisResult latestResult;
     private ScamDetectionListener scamListener;
 
@@ -188,8 +192,7 @@ public class ScamAnalyzerAI {
         latestResult = result;
         notifyListeners(result);
 
-        if (currentScore >= CLOUD_TRIGGER_THRESHOLD && !cloudAnalysisDone
-                && fullTranscript.length() > 20) {
+        if (shouldRunCloudAnalysis(fullTranscript)) {
             triggerCloudAnalysis(fullTranscript);
         }
     }
@@ -199,7 +202,9 @@ public class ScamAnalyzerAI {
         detectedKeywords.clear();
         threatCategory = "none";
         analysisCount = 0;
-        cloudAnalysisDone = false;
+        cloudAnalysisInFlight = false;
+        lastCloudAnalysisAt = 0L;
+        lastCloudTranscriptLength = 0;
         latestResult = null;
     }
 
@@ -316,21 +321,37 @@ public class ScamAnalyzerAI {
         return Math.min(score, 1.0f);
     }
 
+    private boolean shouldRunCloudAnalysis(String transcript) {
+        if (transcript == null || transcript.length() < 20) return false;
+        if (currentScore < CLOUD_TRIGGER_THRESHOLD && analysisCount < 2) return false;
+        if (cloudAnalysisInFlight) return false;
+
+        long now = System.currentTimeMillis();
+        boolean enoughTimePassed = now - lastCloudAnalysisAt >= CLOUD_ANALYSIS_INTERVAL_MS;
+        boolean enoughNewSpeech = transcript.length() - lastCloudTranscriptLength >= CLOUD_ANALYSIS_MIN_NEW_CHARS;
+        return lastCloudAnalysisAt == 0L || (enoughTimePassed && enoughNewSpeech);
+    }
+
     private void triggerCloudAnalysis(String transcript) {
-        cloudAnalysisDone = true;
+        cloudAnalysisInFlight = true;
+        lastCloudAnalysisAt = System.currentTimeMillis();
+        lastCloudTranscriptLength = transcript.length();
         SharedPreferences prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         String apiKey = prefs.getString(PREF_NVIDIA_LLM_API_KEY, "");
         if (apiKey == null || apiKey.trim().isEmpty()) {
             Log.w(TAG, "NVIDIA LLM API key missing. Local analysis remains active.");
+            cloudAnalysisInFlight = false;
             return;
         }
 
         cloudExecutor.execute(() -> {
             try {
                 CloudResponse cloud = callNvidia(apiKey.trim(), transcript);
-                applyCloudResult(cloud);
+                applyCloudResult(cloud, transcript);
             } catch (Exception e) {
                 Log.w(TAG, "NVIDIA analysis failed. Local analysis remains active: " + e.getMessage());
+            } finally {
+                cloudAnalysisInFlight = false;
             }
         });
     }
@@ -346,10 +367,15 @@ public class ScamAnalyzerAI {
         conn.setDoOutput(true);
 
         String prompt = "You are Call Trace analyzing an English phone-call transcript in real time. " +
-                "Return only JSON with keys: is_scam boolean, confidence number 0-1, " +
-                "threat_type string, reasoning string, keywords_found string array. " +
-                "Flag OTP, bank or KYC impersonation, urgent account freeze, remote access, legal threats, " +
-                "refund traps, and credential requests. Transcript: " + transcript;
+                "Think carefully before labeling anything as a scam. Return only JSON with keys: " +
+                "is_scam boolean, confidence number 0-1, threat_type string, reasoning string, " +
+                "keywords_found string array. Mark normal personal, school, college, work, homework, " +
+                "assignment, project, scheduling, family, or friend conversations as not scam unless " +
+                "there is a clear fraud attempt. Only flag scam when the transcript asks for OTP, PIN, " +
+                "CVV, password, bank or UPI details, money transfer, remote access apps, KYC/account " +
+                "freeze, legal/police threats, fake prize/refund traps, or urgent credential requests. " +
+                "If evidence is weak or ambiguous, set is_scam false and confidence below 0.40. " +
+                "Transcript: " + transcript;
 
         JsonArray messages = new JsonArray();
         JsonObject systemMessage = new JsonObject();
@@ -422,10 +448,10 @@ public class ScamAnalyzerAI {
         return cleaned;
     }
 
-    private void applyCloudResult(CloudResponse cloud) {
+    private void applyCloudResult(CloudResponse cloud, String transcript) {
         if (cloud == null) return;
 
-        AnalysisResult result = buildCloudAnalysisResult(cloud, currentScore, threatCategory);
+        AnalysisResult result = buildCloudAnalysisResult(cloud, currentScore, threatCategory, transcript);
         currentScore = result.confidence;
         threatCategory = result.threatType;
 
@@ -436,17 +462,81 @@ public class ScamAnalyzerAI {
                 + " (" + (cloud.confidence * 100) + "%)");
     }
 
-    private AnalysisResult buildCloudAnalysisResult(CloudResponse cloud, float fallbackScore, String fallbackThreat) {
+    private AnalysisResult buildCloudAnalysisResult(CloudResponse cloud, float fallbackScore,
+                                                    String fallbackThreat, String transcript) {
         AnalysisResult result = new AnalysisResult();
         result.confidence = Math.max(cloud.confidence, fallbackScore);
-        result.isScam = cloud.isScam || result.confidence >= LOCAL_ALERT_THRESHOLD;
         result.threatType = cloud.threatType != null ? cloud.threatType : fallbackThreat;
         result.reasoning = cloud.reasoning != null ? cloud.reasoning : "NVIDIA AI analysis";
         result.keywordsFound = cloud.keywordsFound != null && !cloud.keywordsFound.isEmpty()
                 ? new ArrayList<>(cloud.keywordsFound)
                 : new ArrayList<>(detectedKeywords);
+        applyBenignConversationGuard(result, cloud, transcript);
+        result.isScam = result.confidence >= LOCAL_ALERT_THRESHOLD && hasScamEvidence(transcript, result);
         result.fromCloud = true;
         return result;
+    }
+
+    private void applyBenignConversationGuard(AnalysisResult result, CloudResponse cloud, String transcript) {
+        if (transcript == null) return;
+
+        boolean benignConversation = isLikelyBenignConversation(transcript);
+        boolean scamEvidence = hasScamEvidence(transcript, result);
+        if (!benignConversation || scamEvidence) return;
+
+        result.confidence = Math.min(result.confidence, 0.12f);
+        result.isScam = false;
+        result.threatType = "benign_conversation";
+        result.reasoning = "Normal conversation detected; no scam indicators found.";
+        result.keywordsFound.clear();
+    }
+
+    private boolean isLikelyBenignConversation(String transcript) {
+        String lower = transcript.toLowerCase();
+        String[] benignTerms = {
+                "assignment", "homework", "project", "class", "college", "school",
+                "teacher", "professor", "submit", "deadline", "chapter", "notes",
+                "friend", "lunch", "dinner", "meeting", "schedule", "tomorrow"
+        };
+
+        for (String term : benignTerms) {
+            if (lower.contains(term)) return true;
+        }
+        return false;
+    }
+
+    private boolean hasScamEvidence(String transcript, AnalysisResult result) {
+        String lower = transcript != null ? transcript.toLowerCase() : "";
+        String threat = result.threatType != null ? result.threatType.toLowerCase() : "";
+
+        String[] highRiskPhrases = {
+                "otp", "one time password", "cvv", "upi pin", "pin number", "password",
+                "account number", "bank account", "card number", "debit card", "credit card",
+                "aadhaar", "aadhar", "pan card", "kyc", "account blocked", "account suspended",
+                "remote access", "anydesk", "teamviewer", "share screen", "install app",
+                "transfer money", "send money", "pay now", "payment link", "refund",
+                "police", "arrest", "warrant", "legal action", "digital arrest",
+                "lottery", "prize", "winner", "claim your"
+        };
+        for (String phrase : highRiskPhrases) {
+            if (lower.contains(phrase)) return true;
+        }
+
+        if (result.keywordsFound != null) {
+            for (String keyword : result.keywordsFound) {
+                if (keyword == null) continue;
+                String lowerKeyword = keyword.toLowerCase();
+                for (String phrase : highRiskPhrases) {
+                    if (lowerKeyword.contains(phrase) || phrase.contains(lowerKeyword)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return threat.contains("bank") || threat.contains("kyc") || threat.contains("authority")
+                || threat.contains("tech_support") || threat.contains("lottery")
+                || threat.contains("credential") || threat.contains("remote")
+                || threat.contains("payment");
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -493,7 +583,7 @@ public class ScamAnalyzerAI {
                 callback.onTranscriptReady(cleanedTranscript);
 
                 CloudResponse cloud = callNvidia(llmKey.trim(), cleanedTranscript);
-                AnalysisResult result = buildCloudAnalysisResult(cloud, 0f, "none");
+                AnalysisResult result = buildCloudAnalysisResult(cloud, 0f, "none", cleanedTranscript);
                 callback.onAnalysisComplete(result, cleanedTranscript);
             } catch (Exception e) {
                 Log.e(TAG, "NVIDIA audio analysis failed", e);
@@ -502,14 +592,33 @@ public class ScamAnalyzerAI {
         });
     }
 
+    public boolean hasAsrKey() {
+        SharedPreferences prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String asrKey = prefs.getString(PREF_NVIDIA_ASR_API_KEY, "");
+        return asrKey != null && !asrKey.trim().isEmpty();
+    }
+
+    public String transcribePcm16kMono(byte[] pcm16le) throws Exception {
+        SharedPreferences prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String asrKey = prefs.getString(PREF_NVIDIA_ASR_API_KEY, "");
+        if (asrKey == null || asrKey.trim().isEmpty()) {
+            throw new IllegalStateException("NVIDIA ASR/Riva API key is required for live transcription.");
+        }
+        return transcribePcm16kMono(asrKey.trim(), pcm16le);
+    }
+
     private String transcribeAudioWithNvidia(String apiKey, byte[] audioData, String mimeType) throws Exception {
         AudioPcmConverter.PcmAudio pcm = AudioPcmConverter.toMono16k(appContext, audioData, mimeType);
-        byte[] grpcBody = buildStreamingGrpcBody(pcm.pcm16le);
+        return transcribePcm16kMono(apiKey, pcm.pcm16le);
+    }
+
+    private String transcribePcm16kMono(String apiKey, byte[] pcm16le) throws Exception {
+        byte[] grpcBody = buildStreamingGrpcBody(pcm16le);
 
         Request request = new Request.Builder()
                 .url(NVIDIA_RIVA_STREAMING_URL)
                 .header("Authorization", "Bearer " + apiKey)
-                .header("function-id", NVIDIA_PARAKEET_FUNCTION_ID)
+                .header("function-id", NVIDIA_ASR_FUNCTION_ID)
                 .header("te", "trailers")
                 .header("grpc-encoding", "identity")
                 .header("grpc-accept-encoding", "identity")
@@ -529,7 +638,7 @@ public class ScamAnalyzerAI {
 
             String transcript = extractTranscriptFromGrpcFrames(body);
             if (transcript.trim().isEmpty()) {
-                throw new IllegalStateException("NVIDIA ASR did not hear speech in this file.");
+                throw new IllegalStateException("NVIDIA ASR did not hear clear speech in this audio.");
             }
             return transcript;
         }

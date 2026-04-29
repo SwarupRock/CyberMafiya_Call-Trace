@@ -321,7 +321,7 @@
                         android:fontFamily="monospace"
                         android:lineSpacingExtra="4dp"
                         android:paddingEnd="10dp"
-                        android:text="Upload an audio file or make a call to start analysis..."
+                        android:text="Start Call Trace, then answer an incoming call to begin live scam analysis..."
                         android:textColor="@color/cyber_cyan"
                         android:textSize="12sp" />
                 </ScrollView>

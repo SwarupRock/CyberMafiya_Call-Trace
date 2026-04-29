@@ -1,9 +1,18 @@
 package com.scamshield.defender.ui;
 
+import android.content.Context;
+import android.content.ContentValues;
+import android.content.SharedPreferences;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.Typeface;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.util.Log;
+import android.view.Gravity;
 import android.view.View;
+import android.view.Window;
 import android.view.animation.Animation;
 import android.view.animation.ScaleAnimation;
 import android.widget.Button;
@@ -12,8 +21,13 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.scamshield.defender.R;
 import com.scamshield.defender.model.CallLog;
 import com.scamshield.defender.network.FirestoreHelper;
@@ -21,6 +35,14 @@ import com.scamshield.defender.network.FirestoreHelper;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import android.provider.MediaStore;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
@@ -36,7 +58,20 @@ import java.util.Locale;
  */
 public class CallHistoryActivity extends AppCompatActivity {
 
+    private static final String TAG = "CallHistoryActivity";
     private static final int MAX_ENTRIES = 50;
+    private static final String PREFS_NAME = "scam_shield_prefs";
+    private static final String PREF_NVIDIA_LLM_API_KEY = "nvidia_llm_api_key";
+    private static final String NVIDIA_MODEL = "meta/llama-3.1-8b-instruct";
+    private static final String NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
+
+    private static final LanguageOption[] EXPORT_LANGUAGES = {
+            new LanguageOption("Original transcript", "original", "English", false),
+            new LanguageOption("Kannada", "kn", "Kannada", true),
+            new LanguageOption("Hindi", "hi", "Hindi", true),
+            new LanguageOption("Telugu", "te", "Telugu", true),
+            new LanguageOption("Tamil", "ta", "Tamil", true)
+    };
 
     private LinearLayout layoutCallEntries;
     private LinearLayout layoutEmpty;
@@ -44,6 +79,7 @@ public class CallHistoryActivity extends AppCompatActivity {
     private TextView tvTotalCount, tvStatTotal, tvStatScam, tvStatBlocked;
     private Button btnFilterAll, btnFilterScam, btnFilterBlocked;
     private Button btnBack;
+    private final Gson gson = new Gson();
 
     private List<CallLog> allLogs;
     private String currentFilter = "all"; // "all", "scam", "blocked"
@@ -363,7 +399,7 @@ public class CallHistoryActivity extends AppCompatActivity {
         exportParams.setMargins(0, dp(10), 0, 0);
         btnExport.setLayoutParams(exportParams);
         btnExport.setPadding(dp(12), dp(8), dp(12), dp(8));
-        btnExport.setOnClickListener(v -> exportSingleCallToCsv(log));
+        btnExport.setOnClickListener(v -> showExportLanguagePicker(log, btnExport));
         card.addView(btnExport);
 
         layoutCallEntries.addView(card);
@@ -435,6 +471,319 @@ public class CallHistoryActivity extends AppCompatActivity {
     // ═══════════════════════════════════════════════════════════════
     // CSV EXPORT
     // ═══════════════════════════════════════════════════════════════
+
+    private void showExportLanguagePicker(CallLog log, Button exportButton) {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackgroundResource(R.drawable.login_panel_bg);
+        panel.setPadding(dp(18), dp(18), dp(18), dp(16));
+        panel.setAlpha(0f);
+        panel.setScaleX(0.96f);
+        panel.setScaleY(0.96f);
+
+        TextView eyebrow = new TextView(this);
+        eyebrow.setText("CSV EXPORT");
+        eyebrow.setTextColor(getColor(R.color.cyber_cyan));
+        eyebrow.setTextSize(10);
+        eyebrow.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        eyebrow.setLetterSpacing(0.16f);
+        panel.addView(eyebrow);
+
+        TextView title = new TextView(this);
+        title.setText("Download Transcript");
+        title.setTextColor(getColor(R.color.text_primary));
+        title.setTextSize(20);
+        title.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        titleParams.setMargins(0, dp(6), 0, 0);
+        panel.addView(title, titleParams);
+
+        TextView message = new TextView(this);
+        message.setText("Choose the language for the CSV transcript.");
+        message.setTextColor(getColor(R.color.text_secondary));
+        message.setTextSize(12);
+        message.setTypeface(Typeface.MONOSPACE);
+        message.setLineSpacing(dp(2), 1.0f);
+        LinearLayout.LayoutParams messageParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        messageParams.setMargins(0, dp(8), 0, dp(12));
+        panel.addView(message, messageParams);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setView(panel)
+                .create();
+
+        for (LanguageOption language : EXPORT_LANGUAGES) {
+            Button option = new Button(this);
+            option.setAllCaps(false);
+            option.setGravity(Gravity.CENTER_VERTICAL);
+            option.setText(language.label);
+            option.setTextColor(getColor(language.requiresTranslation
+                    ? R.color.cyber_cyan
+                    : R.color.cyber_green));
+            option.setTextSize(12);
+            option.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+            option.setBackgroundResource(R.drawable.menu_button_cyan);
+            option.setPadding(dp(14), 0, dp(14), 0);
+            LinearLayout.LayoutParams optionParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(46));
+            optionParams.setMargins(0, dp(8), 0, 0);
+            panel.addView(option, optionParams);
+
+            option.setOnClickListener(v -> {
+                dialog.dismiss();
+                exportSingleCallToCsv(log, language, exportButton);
+            });
+        }
+
+        Button cancel = new Button(this);
+        cancel.setAllCaps(false);
+        cancel.setText("Cancel");
+        cancel.setTextColor(getColor(R.color.text_dim));
+        cancel.setTextSize(12);
+        cancel.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        cancel.setBackgroundResource(R.drawable.btn_outline_bg);
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(46));
+        cancelParams.setMargins(0, dp(12), 0, 0);
+        panel.addView(cancel, cancelParams);
+        cancel.setOnClickListener(v -> dialog.dismiss());
+
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(android.graphics.Color.TRANSPARENT));
+            window.setDimAmount(0.76f);
+            window.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.90f),
+                    android.view.WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+
+        panel.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(180)
+                .start();
+    }
+
+    private void exportSingleCallToCsv(CallLog log, LanguageOption language, Button exportButton) {
+        String originalTranscript = log.transcript != null ? log.transcript.trim() : "";
+        if (language.requiresTranslation && originalTranscript.isEmpty()) {
+            Toast.makeText(this, "No transcript available to translate", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (language.requiresTranslation && !hasNvidiaAnalysisKey()) {
+            Toast.makeText(this, "NVIDIA LLM key required for translated CSV export",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        exportButton.setEnabled(false);
+        exportButton.setText(language.requiresTranslation ? "Translating..." : "Exporting...");
+
+        new Thread(() -> {
+            try {
+                String exportTranscript = language.requiresTranslation
+                        ? translateTranscript(originalTranscript, language)
+                        : originalTranscript;
+                String fileName = writeCallCsv(log, language, exportTranscript, originalTranscript);
+                runOnUiThread(() -> {
+                    exportButton.setEnabled(true);
+                    exportButton.setText("📥 EXPORT CSV");
+                    Toast.makeText(this, "CSV exported to Downloads/CallTrace/" + fileName,
+                            Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "CSV export failed", e);
+                runOnUiThread(() -> {
+                    exportButton.setEnabled(true);
+                    exportButton.setText("📥 EXPORT CSV");
+                    Toast.makeText(this, "Export failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
+            }
+        }).start();
+    }
+
+    private String writeCallCsv(CallLog log, LanguageOption language,
+                                String exportTranscript, String originalTranscript) throws IOException {
+        String safeNumber = log.phoneNumber != null
+                ? log.phoneNumber.replaceAll("[^0-9A-Za-z]", "")
+                : "unknown";
+        if (safeNumber.isEmpty()) safeNumber = "unknown";
+
+        String fileName = "call_trace_" + safeNumber + "_"
+                + language.code + "_"
+                + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date(log.timestamp))
+                + ".csv";
+
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+        values.put(MediaStore.Downloads.MIME_TYPE, "text/csv");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.put(MediaStore.Downloads.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/CallTrace");
+            values.put(MediaStore.Downloads.IS_PENDING, 1);
+        }
+
+        Uri collection = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                ? MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                : MediaStore.Files.getContentUri("external");
+        Uri fileUri = getContentResolver().insert(collection, values);
+        if (fileUri == null) {
+            throw new IOException("Could not create CSV in Downloads");
+        }
+
+        OutputStream output = getContentResolver().openOutputStream(fileUri);
+        if (output == null) {
+            throw new IOException("Could not open CSV output stream");
+        }
+
+        try (OutputStreamWriter writer = new OutputStreamWriter(output, StandardCharsets.UTF_8)) {
+            writer.write("Phone Number,Date,Duration (s),Scam Score,Is Scam,Threat Type,Risk Level,Blocked,Transcript Language,Transcript,Original Transcript\n");
+            writer.write(escapeCsv(log.phoneNumber) + ",");
+            writer.write(escapeCsv(formatDate(log.timestamp)) + ",");
+            writer.write(log.callDurationSeconds + ",");
+            writer.write(String.format(Locale.US, "%.2f", log.scamScore) + ",");
+            writer.write((log.isScam ? "YES" : "NO") + ",");
+            writer.write(escapeCsv(log.threatType != null ? log.threatType : "none") + ",");
+            writer.write(escapeCsv(getRiskLabel(log.scamScore)) + ",");
+            writer.write((log.blocked ? "YES" : "NO") + ",");
+            writer.write(escapeCsv(language.translationName) + ",");
+            writer.write(escapeCsv(exportTranscript) + ",");
+            writer.write(escapeCsv(originalTranscript) + "\n");
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentValues done = new ContentValues();
+            done.put(MediaStore.Downloads.IS_PENDING, 0);
+            getContentResolver().update(fileUri, done, null, null);
+        }
+
+        return fileName;
+    }
+
+    private String translateTranscript(String transcript, LanguageOption language) throws Exception {
+        String apiKey = getNvidiaLlmApiKey();
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            throw new IllegalStateException("NVIDIA LLM key missing");
+        }
+
+        URL url = new URL(NVIDIA_ENDPOINT);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(30000);
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("Authorization", "Bearer " + apiKey.trim());
+        conn.setDoOutput(true);
+
+        JsonArray messages = new JsonArray();
+        JsonObject systemMessage = new JsonObject();
+        systemMessage.addProperty("role", "system");
+        systemMessage.addProperty("content",
+                "Return strict JSON only. Preserve meaning, names, numbers, OTPs, dates, and scam-related terms.");
+        messages.add(systemMessage);
+
+        JsonObject userMessage = new JsonObject();
+        userMessage.addProperty("role", "user");
+        userMessage.addProperty("content",
+                "Translate this call transcript to " + language.translationName + ". " +
+                        "Return JSON only as {\"translation\":\"...\"}. Transcript: " + transcript);
+        messages.add(userMessage);
+
+        JsonObject body = new JsonObject();
+        body.addProperty("model", NVIDIA_MODEL);
+        body.add("messages", messages);
+        body.addProperty("temperature", 0.1);
+        body.addProperty("max_tokens", 1500);
+
+        try (OutputStream os = conn.getOutputStream()) {
+            byte[] input = gson.toJson(body).getBytes(StandardCharsets.UTF_8);
+            os.write(input, 0, input.length);
+        }
+
+        int code = conn.getResponseCode();
+        String response = readHttpResponse(conn, code);
+        conn.disconnect();
+
+        if (code < 200 || code >= 300) {
+            throw new IllegalStateException("NVIDIA translation failed: HTTP " + code);
+        }
+
+        String modelText = extractChatCompletionText(response);
+        JsonObject translated = JsonParser.parseString(stripJsonFence(modelText)).getAsJsonObject();
+        if (!translated.has("translation")) {
+            throw new IllegalStateException("Translation response missing transcript");
+        }
+        return translated.get("translation").getAsString().trim();
+    }
+
+    private String readHttpResponse(HttpURLConnection conn, int code) throws IOException {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(
+                code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream(),
+                StandardCharsets.UTF_8));
+        StringBuilder response = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) {
+            response.append(line);
+        }
+        reader.close();
+        return response.toString();
+    }
+
+    private String extractChatCompletionText(String responseJson) {
+        JsonObject root = JsonParser.parseString(responseJson).getAsJsonObject();
+        JsonArray choices = root.getAsJsonArray("choices");
+        if (choices == null || choices.size() == 0) {
+            throw new IllegalStateException("NVIDIA returned no translation");
+        }
+        JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
+        if (message == null || !message.has("content")) {
+            throw new IllegalStateException("NVIDIA returned empty translation");
+        }
+        return message.get("content").getAsString();
+    }
+
+    private String stripJsonFence(String text) {
+        if (text == null) return "";
+        String cleaned = text.trim();
+        if (cleaned.startsWith("```")) {
+            cleaned = cleaned.replaceFirst("^```(?:json)?", "").trim();
+            if (cleaned.endsWith("```")) {
+                cleaned = cleaned.substring(0, cleaned.length() - 3).trim();
+            }
+        }
+        return cleaned;
+    }
+
+    private boolean hasNvidiaAnalysisKey() {
+        String key = getNvidiaLlmApiKey();
+        return key != null && !key.trim().isEmpty();
+    }
+
+    private String getNvidiaLlmApiKey() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        return prefs.getString(PREF_NVIDIA_LLM_API_KEY, "");
+    }
+
+    private static class LanguageOption {
+        final String label;
+        final String code;
+        final String translationName;
+        final boolean requiresTranslation;
+
+        LanguageOption(String label, String code, String translationName, boolean requiresTranslation) {
+            this.label = label;
+            this.code = code;
+            this.translationName = translationName;
+            this.requiresTranslation = requiresTranslation;
+        }
+    }
 
     private void exportSingleCallToCsv(CallLog log) {
         try {
